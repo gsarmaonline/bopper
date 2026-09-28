@@ -107,19 +107,22 @@ free ([spikes/a-networking.md](spikes/a-networking.md)).
 Bopper shares by default, at every layer. It copies in two cases only: when a change
 would otherwise corrupt the shared resource, and when you ask for a copy.
 
-| Resource                        | Default                                              | Copy when                                            |
-| ------------------------------- | ---------------------------------------------------- | ---------------------------------------------------- |
-| Services                        | The baseline serves every service                    | The service's build inputs changed                   |
-| Database                        | Shared with the baseline, through a read-only role   | The branch changes a migration or writes, or you ask |
-| Cache                           | Shared keys, so the overlay starts warm              | You ask                                              |
-| Queue consumers, scheduled jobs | The baseline's keep running; the overlay starts none | You ask                                              |
+| Resource                        | Default                                              | Copy when                                            | Built  |
+| ------------------------------- | ---------------------------------------------------- | ---------------------------------------------------- | ------ |
+| Services                        | The baseline serves every service                    | The service's build inputs changed                   | yes    |
+| Queue consumers, scheduled jobs | The baseline's keep running; the overlay starts none | You ask                                              | partly |
+| Database                        | Shared with the baseline, through a read-only role   | The branch changes a migration or writes, or you ask | **no** |
+| Cache                           | Shared keys, so the overlay starts warm              | You ask                                              | **no** |
 
-The database is shared through a read-only role, so one worktree cannot corrupt
-another's data by accident. A branch that needs writes says so and gets a clone, and
-a branch whose migrations differ from the baseline's gets one without asking, because
-that migration would otherwise break every other worktree. Pass `--share db` to
-override and accept the risk. Everything else stays shared until `--isolate
-cache,queues` says otherwise.
+> **The data rows are the design, not the behaviour.** Phase 4 is unbuilt, so a
+> workspace today connects to the baseline database exactly as the baseline does,
+> with full write access and no clone. **A migration run in a workspace alters the
+> shared database for the baseline and every other worktree.** There is no read-only
+> role, no `--share db`, and no `--isolate`. Until Phase 4 lands, treat a
+> schema-changing branch as something to run against its own database by hand.
+
+An overlay does start no queue consumer and no scheduled job, because it only runs
+the services it was told to; there is no `--isolate` flag to turn that back on yet.
 
 ## What this does not solve yet
 
@@ -129,8 +132,9 @@ cache,queues` says otherwise.
   next hop to the baseline version, and nothing looks wrong. Propagation is the
   application's job. It is off by default, because it also puts every internal
   baseline call through the proxy.
-- **Databases are shared as they are.** Nothing clones on a differing migration yet,
-  so a branch that changes a migration will change it for everyone (Phase 4).
+- **Databases are shared as they are, with write access.** Nothing clones on a
+  differing migration, so a migration run in a workspace changes the schema for the
+  baseline and every other worktree. This is the largest gap in the tool (Phase 4).
 - **A branch that changes a queue consumer or a scheduled job needs `--isolate`.**
   Two copies of a singleton compete for the same messages.
 - **One branch in five changes every service**, through shared code or a lockfile.
