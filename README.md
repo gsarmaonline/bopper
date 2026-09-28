@@ -7,6 +7,13 @@ containers yet.** `bop up`, `bop down`, `bop ls` and `bop status` are real. Rout
 overlays and databases are Phase 3 — see [roadmap.md](roadmap.md). For the full
 rationale and the product direction, read [vision.md](vision.md).
 
+![bop in use](docs/demo.gif)
+
+Every figure in the demo is measured, not invented. The disk and time numbers come
+from [Spike B](spikes/b-reflink.md); the fall-through behaviour comes from
+[Spike A](spikes/a-networking.md). Higher quality copy:
+[docs/demo.mp4](docs/demo.mp4). Source and build instructions: [video/](video/).
+
 ## The problem
 
 Git worktrees make several branches cheap to keep checked out. The application stack
@@ -117,16 +124,6 @@ make spikes     # re-run the Docker DNS regression test after a Docker upgrade
 
 The Phase 0 experiments live in [spikes/](spikes/), each with its script and its
 findings. They are worth reading before changing the mechanisms they measured.
-
-## Demo
-
-A 22-second walkthrough of the workflow lives in [video/](video/). Every figure it
-shows is measured, not invented — the disk and time numbers come from Spike B, the
-fall-through behaviour from Spike A.
-
-```
-cd video && npm install && npm run render   # writes out/bop.mp4
-```
 
 ## Documents
 

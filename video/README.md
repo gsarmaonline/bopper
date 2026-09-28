@@ -18,6 +18,16 @@ npm run render     # writes out/bop.mp4
 
 1280×720, 30 fps, 665 frames (22 s).
 
+The committed copies live in `../docs/`: `demo.gif` (960×540, 15 fps, 1.8 MB) is what
+the top-level README embeds, because GitHub will not play a repo-relative `.mp4`
+inline. `demo.mp4` is the full-resolution version. Regenerate both with:
+
+```
+npm run render                                                   # ../docs/demo.mp4 source
+npx remotion render src/index.ts BopDemo out/bop.gif \
+  --codec=gif --every-nth-frame=2 --scale=0.75                   # ../docs/demo.gif source
+```
+
 ## Layout
 
 ```
