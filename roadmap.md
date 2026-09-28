@@ -26,15 +26,19 @@ instead, because Docker resolves across attached networks in alphabetical order 
 network name. Overlays keep plain service names. The behaviour is undocumented, so
 `spikes/a3-name-order.sh` guards it as a regression test.
 
-**Spike B, filesystem.** Run `git worktree add`, `cp -c`, then `git restore`. Check
-that mtimes survive, that an incremental build stays warm, and that git does not
-report a cloned file as clean when it differs. A cloned index with cloned mtimes is
-the risk. Output is the exact sequence of operations, which
-[vision.md](vision.md) does not yet define.
+**Spike B, filesystem. DONE.** See [spikes/b-reflink.md](spikes/b-reflink.md).
+On 41k files and 1.2 GB, a reflink clone costs 22 MB against 1305 MB for a real copy,
+and 9 s against 23-35 s. The sequence is `git worktree add`, then overlay the main
+working directory with `cp -c` skipping `.git`, then `git checkout -- .`. Mtimes
+survive every step, the incremental build stays warm, and git detects a cloned file
+whose content differs even at identical size and mtime, because the index compares
+inode and ctime too.
 
-**Measurement.** Record services per stack, memory per stack, startup time, disk per
-worktree, and how often a branch changes only one or two services. The design sells
-cost reduction and measures nothing today. Every later claim rests on these numbers.
+**Measurement. PARTLY DONE.** Spike B measured disk and time per worktree: 22 MB and
+9 s against 1305 MB and 23-35 s for a real copy, on a 1.2 GB tree. Still owed, and
+not answerable from a fixture: how often a real branch changes only one or two
+services. That needs real git history, and it is the number the whole design rests
+on. Services per stack, memory per stack and startup time are still unmeasured.
 
 **Exit:** both spikes documented and the numbers recorded. If either spike fails, the
 design changes before any code exists.
@@ -145,7 +149,7 @@ These block the phases named beside them.
 
 | Question                                                            | Blocks  |
 | ------------------------------------------------------------------- | ------- |
-| In what order do `git worktree add`, the reflink clone and `git restore` run? | Phase 1 |
 | Which build inputs enter the hash, and which are safe to omit?      | Phase 2 |
 | Where does the idle template database come from, and who seeds it?  | Phase 4 |
-| What does a stack actually cost today, in memory, disk and seconds? | Phase 0 |
+| How often does a real branch change only one or two services?       | Phase 0 |
+| What does a stack cost in memory and startup seconds?               | Phase 0 |
