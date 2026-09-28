@@ -118,6 +118,16 @@ make spikes     # re-run the Docker DNS regression test after a Docker upgrade
 The Phase 0 experiments live in [spikes/](spikes/), each with its script and its
 findings. They are worth reading before changing the mechanisms they measured.
 
+## Demo
+
+A 22-second walkthrough of the workflow lives in [video/](video/). Every figure it
+shows is measured, not invented — the disk and time numbers come from Spike B, the
+fall-through behaviour from Spike A.
+
+```
+cd video && npm install && npm run render   # writes out/bop.mp4
+```
+
 ## Documents
 
 - [roadmap.md](roadmap.md) — the six build phases, their exit tests, and the open
