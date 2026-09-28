@@ -3,7 +3,7 @@
 Six phases. The order follows risk, not feature value. The two assumptions that could
 sink the design get tested before anything is built.
 
-Phases 0 to 3 are the product. Phases 4 to 6 are follow-ons.
+Phases 0 to 3, 5 and 6 are done. Phase 4, the data layer, is the only one left.
 
 | Phase | Delivers                              | Exit test                                                      | Status |
 | ----- | ------------------------------------- | -------------------------------------------------------------- | ------ |
@@ -11,9 +11,9 @@ Phases 0 to 3 are the product. Phases 4 to 6 are follow-ons.
 | 1     | Workspace layer: `bop up` / `bop down` | Workspaces create and destroy reliably                         | DONE   |
 | 2     | Change detection: `bop status`         | No false negatives on a corpus of real changes                 | DONE   |
 | 3     | Partial stack, no header routing      | A one-service change starts one container; the app works       | DONE   |
-| 4     | Data: read-only default, clone on need | A schema branch clones, a code branch shares, neither breaks   |        |
-| 5     | Lifecycle: labels, `bop ls`, `bop clean` | Ten workspaces left a week do not fill the disk              |        |
-| 6     | Header routing                        | A non-edge service receives tagged traffic                     |        |
+| 4     | Data: read-only default, clone on need | A schema branch clones, a code branch shares, neither breaks   | ONLY ONE LEFT |
+| 5     | Lifecycle: labels, `bop ls`, `bop clean` | Ten workspaces left a week do not fill the disk              | DONE   |
+| 6     | Header routing                        | A non-edge service receives tagged traffic                     | DONE   |
 
 ## Phase 0 — Prove the primitives by hand
 
@@ -170,23 +170,67 @@ overrides.
 **Exit:** a schema-changing branch gets a clone, a code-only branch shares the
 baseline, and neither breaks the other.
 
-## Phase 5 — Lifecycle
+## Phase 5 — Lifecycle. DONE
 
-A `bopper.workspace=<id>` label on every overlay container, volume and database clone.
-`bop ls` and `bop clean`. The tiered idle policy: stop overlays after hours, delete
-data only after days or after the worktree is gone. Traefik access logs as the real
-last-use signal, which Docker does not record.
+`bop clean` in `internal/environment/cleanup.go`. Every overlay container carries
+`bopper.workspace=<id>`, so cleanup touches only what Bopper made and never the
+baseline or another project.
 
-**Exit:** ten workspaces left for a week do not fill the disk.
+**The proxy writes a JSON access log**, and that is what makes the policy honest.
+Docker records no last-access time for anything; `docker system prune --filter until=`
+filters on CREATION time, not use, and does not apply to volumes at all. Without the
+access log the only signal is a container's start time, which says nothing about
+whether anyone has touched the workspace since. Where a workspace has no routed
+service and so never appears in the log, Bopper falls back to start time and says so
+rather than implying more.
 
-## Phase 6 — Header routing
+Tiered, as designed: `-idle` stops an overlay and frees memory while leaving data and
+the worktree alone; `-remove-after` removes containers and the network. A workspace
+whose worktree no longer exists is an orphan and goes regardless of age, which is the
+common case — somebody deleted a directory by hand.
 
-`X-Worktree` propagation, hostname-to-header conversion at the edge, and
-OpenTelemetry baggage for the hops in between. This is what lets a baseline service
-call an overlay.
+**Exit met:** an idle overlay is stopped but kept; a hand-deleted worktree has its
+container, network and route file all reclaimed; `-dry-run` reports without changing.
 
-**Exit:** a changed service that does not sit at the edge of the call graph receives
-tagged traffic.
+## Phase 6 — Header routing. DONE
+
+`bop headers on` in `internal/environment/headers.go`. This is what lets a BASELINE
+service reach an overlay, so a changed service no longer has to sit at the edge of the
+call graph.
+
+**Verified against real containers.** On the baseline network, an untagged request for
+`orders` reached the baseline 6 times out of 6; the same request carrying
+`X-Worktree: feat` reached the overlay 6 out of 6; an unknown workspace tag fell back
+to the baseline. The edge injects the header itself, so a hostname is the whole
+interface — no browser extension, no curl flag.
+
+**How it works, and why it is opt-in.** For the proxy to route by header it must be
+the thing that answers to `orders` on the baseline network. Spike A settled what
+happens when two containers share one alias, so under this mode the baseline's own
+services give up their plain names too, exactly as the overlay does: they run as
+`<service>--base` and the proxy holds the plain name alone.
+
+That is a real cost. Every internal call in the baseline now crosses the proxy, which
+adds latency and a single point of failure, and it buys nothing for a branch whose
+changed service is already at the edge. So the no-routing mode stays the default and
+stays first-class, as `vision.md` requires.
+
+**The limit Bopper cannot fix.** The proxy tags a request at the edge, but a baseline
+service that does not FORWARD the header sends the next hop to the baseline version —
+and nothing appears to be wrong. Propagation is the application's job, through
+OpenTelemetry baggage or explicit forwarding. `bop headers on` says this plainly
+rather than letting it be discovered.
+
+**One defect worth recording.** Router names share a single namespace across every
+file the provider loads. The edge router and the intercept router were both
+`<id>-<service>`, so the intercept file silently overwrote the edge router: header
+routed calls worked perfectly while every request to `<id>.localhost` returned 404. A
+test now fails if the two namespaces ever collide again.
+
+**Exit met:** a changed service that does not sit at the edge of the call graph
+receives tagged traffic.
+
+
 
 ## Decisions
 

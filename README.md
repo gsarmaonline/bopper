@@ -2,12 +2,14 @@
 
 Run one Docker Compose stack, and give each git worktree only the containers it changed.
 
-**Status: working for the no-routing case.** `bop up` creates a reflinked worktree,
-works out which services the branch changed, and starts only those — reachable at
-`<id>.localhost` through a shared proxy, with everything else falling through to one
-shared baseline stack. Databases are still shared as-is (Phase 4) and a baseline
-service cannot yet call an overlay (Phase 6). See [roadmap.md](roadmap.md) for the
-phases, and [vision.md](vision.md) for the rationale.
+**Status: working.** `bop up` creates a reflinked worktree, works out which services
+the branch changed, and starts only those — reachable at `<id>.localhost` through a
+shared proxy, with everything else falling through to one shared baseline stack.
+`bop clean` reclaims what goes idle. `bop headers on` lets a baseline service reach
+an overlay. The data layer is the one piece still unbuilt: databases are shared as
+they are, with no clone on a differing migration (Phase 4). See
+[roadmap.md](roadmap.md) for the phases, and [vision.md](vision.md) for the
+rationale.
 
 ![bop in use](docs/demo.gif)
 
@@ -62,6 +64,7 @@ WORKSPACE  CONTAINERS                     URL
 feature-x  bopper-ws-feature-x-orders--…  http://feature-x.localhost:8080
 
 $ bop ls
+$ bop clean [-idle 3h] [-remove-after 72h] [-dry-run]
 $ bop down feature-x [-delete-branch]
 ```
 
@@ -91,6 +94,8 @@ Four mechanisms, each sharing by default and copying only on change:
 | Detection  | A hash of each service's build inputs, compared against the baseline         | done    |
 | Services   | Changed services only, on a workspace network that falls through to baseline | done    |
 | Data       | Shared read-only, cloned only when a migration differs                       | Phase 4 |
+| Lifecycle  | Everything labelled; idle overlays stopped, orphans reclaimed                | done    |
+| Routing    | `X-Worktree` lets a baseline service reach an overlay (opt-in)              | done    |
 
 The services layer rests on a measured property of Docker's resolver: a container
 attached to two networks resolves names from the alphabetically first network name,
@@ -118,14 +123,38 @@ cache,queues` says otherwise.
 
 ## What this does not solve yet
 
-- **A baseline service cannot call an overlay service.** Header routing is Phase 6.
-  Until then the changed service must sit at the edge of the call graph.
+- **Header routing needs your services to forward the header.** `bop headers on` puts
+  the proxy in front of the baseline so a baseline service can reach an overlay. The
+  edge tags the request, but a service that does not forward `X-Worktree` sends the
+  next hop to the baseline version, and nothing looks wrong. Propagation is the
+  application's job. It is off by default, because it also puts every internal
+  baseline call through the proxy.
+- **Databases are shared as they are.** Nothing clones on a differing migration yet,
+  so a branch that changes a migration will change it for everyone (Phase 4).
 - **A branch that changes a queue consumer or a scheduled job needs `--isolate`.**
   Two copies of a singleton compete for the same messages.
 - **One branch in five changes every service**, through shared code or a lockfile.
   Those branches save nothing, and `bop up` must fall back to a full stack.
 - **Builds must be reproducible enough for input hashes to stay stable.** Base images
   are hashed as written, so a moved tag goes unnoticed; pin them by digest.
+
+## Cleanup
+
+Docker cannot reclaim this usefully on its own: it records no last-access time,
+`prune --filter until=` filters on creation time rather than use, and that filter
+does not apply to volumes at all. Every resource Bopper creates carries
+`bopper.workspace=<id>`, and the proxy writes an access log, so `bop clean` can be
+precise:
+
+```
+$ bop clean -dry-run
+ACTION  KIND       NAME                           WHY
+stop    container  bopper-ws-feat-orders--feat-1  idle 4h12m
+remove  container  bopper-ws-beta-orders--beta-1  workspace no longer exists
+```
+
+Stopping frees memory and leaves data and the worktree alone. A workspace whose
+worktree is gone is reclaimed regardless of age.
 
 ## Development
 

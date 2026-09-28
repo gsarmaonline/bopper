@@ -57,6 +57,17 @@ func URL(host string) string {
 
 func (r *Runner) dynamicDir() string { return filepath.Join(r.StateDir, proxyDynamicDir) }
 
+// logDir holds the proxy's access log.
+//
+// Docker records no last-access time for anything, so without this the only
+// available signal is a container's start time - which says nothing about
+// whether anyone has used the workspace since. The access log is the real
+// signal, and it is what makes an idle policy honest rather than arbitrary.
+func (r *Runner) logDir() string { return filepath.Join(r.StateDir, "traefik-log") }
+
+// AccessLogPath is where the proxy writes its access log on the host.
+func (r *Runner) AccessLogPath() string { return filepath.Join(r.logDir(), "access.log") }
+
 // WriteRoutes publishes one workspace's routing rules. It reports whether the
 // file actually changed, so the caller can avoid a needless proxy reload.
 //
@@ -81,12 +92,30 @@ func (r *Runner) WriteRoutes(id string, routes map[string]RouteOptions) (bool, e
 
 	routers := map[string]any{}
 	services := map[string]any{}
+	middlewares := map[string]any{
+		// Tag every request entering through this workspace's hostname. A
+		// baseline service that forwards the header will then reach this
+		// workspace's overlay on the next hop rather than the baseline's copy.
+		// Injecting it here means a browser needs no extension and curl needs
+		// no flag - the hostname is the whole interface.
+		"tag-" + id: map[string]any{
+			"headers": map[string]any{
+				"customRequestHeaders": map[string]any{Header: id},
+			},
+		},
+	}
 	for svc, r0 := range routes {
-		key := id + "-" + svc
+		// Router names share one namespace across every file the provider
+		// loads, so the edge and intercept routers must not collide. They did:
+		// both were "<id>-<service>", the intercept file overwrote the edge
+		// router, and every request to <id>.localhost 404'd while the
+		// header-routed calls kept working.
+		key := "edge-" + id + "-" + svc
 		routers[key] = map[string]any{
 			"rule":        fmt.Sprintf("Host(`%s`)", r0.Host),
 			"service":     key,
 			"entryPoints": []string{"web"},
+			"middlewares": []string{"tag-" + id},
 		}
 		// Address the container by its overlay name. That name is unique across
 		// every network the proxy is attached to, whereas the plain service name
@@ -100,7 +129,9 @@ func (r *Runner) WriteRoutes(id string, routes map[string]RouteOptions) (bool, e
 		}
 	}
 	doc, err := yaml.Marshal(map[string]any{
-		"http": map[string]any{"routers": routers, "services": services},
+		"http": map[string]any{
+			"routers": routers, "services": services, "middlewares": middlewares,
+		},
 	})
 	if err != nil {
 		return false, err
@@ -148,6 +179,10 @@ func (r *Runner) EnsureProxy(ctx context.Context) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
+	logs := r.logDir()
+	if err := os.MkdirAll(logs, 0o755); err != nil {
+		return err
+	}
 
 	_, err = r.run(ctx, "docker", "run", "-d",
 		"--name", ProxyName,
@@ -155,12 +190,15 @@ func (r *Runner) EnsureProxy(ctx context.Context) error {
 		"--network", BaselineNetwork,
 		"-p", fmt.Sprintf("%d:80", ProxyPort()),
 		"-v", dir+":/etc/traefik/dynamic:ro",
+		"-v", logs+":/var/log/traefik",
 		"--label", "bopper.managed=true",
 		ProxyImage,
 		"--providers.file.directory=/etc/traefik/dynamic",
 		"--providers.file.watch=true",
 		"--entrypoints.web.address=:80",
 		"--accesslog=true",
+		"--accesslog.format=json",
+		"--accesslog.filepath=/var/log/traefik/access.log",
 		"--log.level=INFO",
 	)
 	if err != nil {

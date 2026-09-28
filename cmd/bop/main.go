@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"text/tabwriter"
+	"time"
 
 	"github.com/compose-spec/compose-go/v2/types"
 	"github.com/gsarmaonline/bopper/internal/detect"
@@ -28,6 +29,9 @@ Usage:
   bop ls                                    list workspaces
   bop status [<name>] [-v]                  show which services a workspace changes
   bop ps [<name>]                           show a workspace's running containers
+  bop clean [-idle <dur>] [-remove-after <dur>] [-dry-run]
+                                            reclaim idle overlays and orphans
+  bop headers [on|off]                      route baseline->overlay calls by header
 
 bop up starts the baseline stack once, then runs only the services the branch
 changed. Everything else falls through to the baseline.
@@ -52,6 +56,10 @@ func main() {
 		err = cmdStatus(os.Args[2:])
 	case "ps":
 		err = cmdPs(os.Args[2:])
+	case "clean":
+		err = cmdClean(os.Args[2:])
+	case "headers":
+		err = cmdHeaders(os.Args[2:])
 	case "-h", "--help", "help":
 		fmt.Print(usage)
 		return
@@ -191,6 +199,9 @@ func startEnv(ctx context.Context, m *workspace.Manager, w workspace.Workspace, 
 	} else {
 		fmt.Printf("  url    none: no changed service publishes a port\n")
 	}
+	if res.HeaderRouting {
+		fmt.Printf("  routing header %s: %s\n", environment.Header, w.ID)
+	}
 	if res.FullStack {
 		// Spike C measured this at one branch in five. It is not an edge case,
 		// and it should not be a silent disappointment.
@@ -269,6 +280,121 @@ func cmdDown(args []string) error {
 	}
 	fmt.Printf("removed workspace %s\n", id)
 	return nil
+}
+
+// cmdHeaders turns header routing on or off.
+//
+// It is deliberately a separate command rather than a flag on bop up: the mode
+// changes how the BASELINE is named and run, so it is an installation-wide
+// choice, not a per-workspace one.
+func cmdHeaders(args []string) error {
+	fs := flag.NewFlagSet("headers", flag.ExitOnError)
+	if err := parseArgs(fs, args); err != nil {
+		return err
+	}
+	r, err := environment.NewRunner()
+	if err != nil {
+		return err
+	}
+	if fs.NArg() == 0 {
+		if r.HeaderRouting() {
+			fmt.Println("header routing: on")
+			fmt.Printf("  a baseline service that forwards %s reaches the overlay\n",
+				environment.Header)
+		} else {
+			fmt.Println("header routing: off")
+			fmt.Println("  a changed service must sit at the edge of the call graph")
+		}
+		return nil
+	}
+	switch fs.Arg(0) {
+	case "on":
+		if err := r.SetHeaderRouting(true); err != nil {
+			return err
+		}
+		fmt.Println("header routing: on")
+		fmt.Println()
+		fmt.Println("Every internal call in the baseline now crosses the proxy, which costs")
+		fmt.Printf("latency and adds a single point of failure. Your services must FORWARD\n")
+		fmt.Printf("%s for it to work past the first hop; where they do not, the\n", environment.Header)
+		fmt.Println("request reaches the baseline's version and nothing appears to be wrong.")
+		fmt.Println()
+		fmt.Println("Run bop up again to restart the baseline in this mode.")
+	case "off":
+		if err := r.SetHeaderRouting(false); err != nil {
+			return err
+		}
+		fmt.Println("header routing: off")
+		fmt.Println("Run bop up again to restart the baseline in the default mode.")
+	default:
+		return fmt.Errorf("usage: bop headers [on|off]")
+	}
+	return nil
+}
+
+// cmdClean reclaims what Bopper created. Docker cannot do this usefully: it
+// records no last-access time, `prune --filter until=` filters on creation time
+// rather than use, and that filter does not apply to volumes at all. Bopper
+// labels everything it creates, so it can be precise.
+func cmdClean(args []string) error {
+	fs := flag.NewFlagSet("clean", flag.ExitOnError)
+	idle := fs.Duration("idle", 3*time.Hour, "stop overlays unused for this long")
+	rm := fs.Duration("remove-after", 72*time.Hour, "remove overlays unused for this long")
+	dry := fs.Bool("dry-run", false, "report without changing anything")
+	if err := parseArgs(fs, args); err != nil {
+		return err
+	}
+	m, err := manager()
+	if err != nil {
+		return err
+	}
+	ctx := context.Background()
+	if err := environment.Available(ctx); err != nil {
+		return err
+	}
+	r, err := environment.NewRunner()
+	if err != nil {
+		return err
+	}
+
+	// Anything labelled for a workspace that no longer exists is an orphan,
+	// whatever its age. This is the common case: a worktree removed by hand.
+	ws, err := m.List()
+	if err != nil {
+		return err
+	}
+	known := map[string]bool{}
+	host := map[string]string{}
+	for _, w := range ws {
+		known[w.ID] = true
+		host[w.ID] = w.Host()
+	}
+
+	actions, err := r.Clean(ctx, environment.Policy{
+		StopIdle: *idle, RemoveIdle: *rm, Known: known, DryRun: *dry,
+	}, func(id string) string {
+		if h, ok := host[id]; ok {
+			return h
+		}
+		return id + ".localhost"
+	})
+	if err != nil {
+		return err
+	}
+	if len(actions) == 0 {
+		fmt.Println("nothing to clean")
+		return nil
+	}
+
+	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	if *dry {
+		fmt.Println("dry run; nothing was changed")
+	}
+	fmt.Fprintln(tw, "ACTION\tKIND\tNAME\tWHY")
+	for _, a := range actions {
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", a.Verb, a.Resource.Kind, a.Resource.Name, a.Reason)
+	}
+	return tw.Flush()
 }
 
 func cmdPs(args []string) error {

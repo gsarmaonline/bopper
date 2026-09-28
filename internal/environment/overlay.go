@@ -238,3 +238,77 @@ func mergeLabels(existing any, add map[string]string) map[string]string {
 	}
 	return out
 }
+
+// BaselineName is the compose service key the baseline uses under header
+// routing.
+//
+// The rename exists for the same reason the overlay's does, applied to the
+// other side. For the proxy to route by header it must be the thing that
+// answers to "orders" on the baseline network — and Spike A showed that two
+// containers holding one alias splits traffic between them at random. So under
+// header routing the baseline's own containers give up the plain name too, and
+// the proxy holds it alone.
+func BaselineName(service string) string { return service + "--base" }
+
+// BuildBaselineHeaderRouted renders a baseline compose file whose services have
+// given up their plain network aliases.
+//
+// This is only used in header-routing mode. Without it the baseline keeps its
+// ordinary names, every call resolves directly, and the proxy is only involved
+// at the edge — which is the default, and the mode that needs nothing of the
+// application.
+func BuildBaselineHeaderRouted(project *types.Project) ([]byte, error) {
+	names := make([]string, 0, len(project.Services))
+	for name := range project.Services {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	svcs := map[string]any{}
+	for _, name := range names {
+		m, err := serviceToMap(project.Services[name])
+		if err != nil {
+			return nil, err
+		}
+		delete(m, "container_name")
+		if dep, ok := m["depends_on"]; ok {
+			if renamed := renameDepsWith(dep, BaselineName); isEmpty(renamed) {
+				delete(m, "depends_on")
+			} else {
+				m["depends_on"] = renamed
+			}
+		}
+		// No aliases: the proxy holds the plain name on this network.
+		m["networks"] = map[string]any{"baseline": map[string]any{}}
+		m["labels"] = mergeLabels(m["labels"], map[string]string{"bopper.baseline": "true"})
+		svcs[BaselineName(name)] = m
+	}
+	return yaml.Marshal(map[string]any{
+		"services": svcs,
+		"networks": map[string]any{
+			"baseline": map[string]any{"name": BaselineNetwork, "external": true},
+		},
+	})
+}
+
+// renameDepsWith rewrites depends_on keys through rename, keeping every entry:
+// unlike an overlay, the baseline runs the whole stack.
+func renameDepsWith(dep any, rename func(string) string) any {
+	switch d := dep.(type) {
+	case map[string]any:
+		out := map[string]any{}
+		for k, v := range d {
+			out[rename(k)] = v
+		}
+		return out
+	case []any:
+		var out []any
+		for _, v := range d {
+			if s, ok := v.(string); ok {
+				out = append(out, rename(s))
+			}
+		}
+		return out
+	}
+	return nil
+}
