@@ -34,11 +34,17 @@ survive every step, the incremental build stays warm, and git detects a cloned f
 whose content differs even at identical size and mtime, because the index compares
 inode and ctime too.
 
-**Measurement. PARTLY DONE.** Spike B measured disk and time per worktree: 22 MB and
-9 s against 1305 MB and 23-35 s for a real copy, on a 1.2 GB tree. Still owed, and
-not answerable from a fixture: how often a real branch changes only one or two
-services. That needs real git history, and it is the number the whole design rests
-on. Services per stack, memory per stack and startup time are still unmeasured.
+**Measurement. MOSTLY DONE.** Spike B measured disk and time per worktree: 22 MB and
+9 s against 1305 MB and 23-35 s for a real copy, on a 1.2 GB tree.
+[Spike C](spikes/c-history.md) measured the premise against real history from immich
+and penpot, 13,445 branches: about three quarters of service-touching branches change
+exactly one service, and 79-84% change at most two. Memory per stack and startup time
+are still unmeasured.
+
+**Spike C, history. DONE.** See [spikes/c-history.md](spikes/c-history.md). The
+premise holds, with a caveat the design must handle: 16-21% of branches touch three or
+more services, clustered on shared code and lockfile changes. `bop up` must degrade to
+a full stack gracefully, because that is not an edge case at one in five branches.
 
 **Exit:** both spikes documented and the numbers recorded. If either spike fails, the
 design changes before any code exists.
@@ -151,5 +157,4 @@ These block the phases named beside them.
 | ------------------------------------------------------------------- | ------- |
 | Which build inputs enter the hash, and which are safe to omit?      | Phase 2 |
 | Where does the idle template database come from, and who seeds it?  | Phase 4 |
-| How often does a real branch change only one or two services?       | Phase 0 |
 | What does a stack cost in memory and startup seconds?               | Phase 0 |

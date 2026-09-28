@@ -12,6 +12,8 @@ Git worktrees make it cheap to have several branches checked out at once, but ru
 
 That is wasteful because most branches change one or two services. The rest of each copy is identical to what is already running for `main`. The cost shows up as startup time, memory and CPU on the laptop, and as friction that discourages running more than one or two stacks at a time.
 
+[Spike C](spikes/c-history.md) measured this across 13,445 real branches in immich and penpot. About three quarters of the branches that touch any service touch exactly one, and 79 to 84% touch at most two. A further quarter to two fifths of all branches touch no service at all, and need no stack. The tail is real though: 16 to 21% of branches touch three or more services, almost always through shared code or a lockfile, and those save nothing. `bop up` has to fall back to a full stack without ceremony.
+
 The goal is to run one full stack and let each worktree deploy only the containers it actually changed, with everything else falling through to the shared baseline.
 
 ## Where duplication hurts
