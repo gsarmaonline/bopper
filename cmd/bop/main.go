@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"text/tabwriter"
 
 	"github.com/gsarmaonline/bopper/internal/detect"
@@ -56,6 +57,43 @@ func main() {
 	}
 }
 
+// parseArgs parses flags that may appear after positional arguments.
+//
+// The standard flag package stops at the first non-flag argument, so
+// "bop down feat -delete-branch" would silently treat -delete-branch as a
+// second positional. That is the form the help text documents and the form
+// people type, so permute the arguments before parsing.
+func parseArgs(fs *flag.FlagSet, args []string) error {
+	var flags, positional []string
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if a == "--" {
+			positional = append(positional, args[i+1:]...)
+			break
+		}
+		if len(a) > 1 && a[0] == '-' {
+			flags = append(flags, a)
+			// "-name value" consumes the next argument; "-bool" and
+			// "-name=value" do not.
+			if !strings.Contains(a, "=") {
+				if f := fs.Lookup(strings.TrimLeft(a, "-")); f != nil {
+					if b, ok := f.Value.(interface{ IsBoolFlag() bool }); !ok || !b.IsBoolFlag() {
+						if i+1 < len(args) {
+							i++
+							flags = append(flags, args[i])
+						}
+					}
+				}
+			}
+			continue
+		}
+		positional = append(positional, a)
+	}
+	// Re-insert the terminator so anything collected as positional stays
+	// positional, including a literal argument that begins with a dash.
+	return fs.Parse(append(append(flags, "--"), positional...))
+}
+
 func manager() (*workspace.Manager, error) {
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -67,7 +105,7 @@ func manager() (*workspace.Manager, error) {
 func cmdUp(args []string) error {
 	fs := flag.NewFlagSet("up", flag.ExitOnError)
 	base := fs.String("base", "", "branch to fork from (default: the current branch)")
-	if err := fs.Parse(args); err != nil {
+	if err := parseArgs(fs, args); err != nil {
 		return err
 	}
 	if fs.NArg() != 1 {
@@ -91,7 +129,7 @@ func cmdUp(args []string) error {
 func cmdDown(args []string) error {
 	fs := flag.NewFlagSet("down", flag.ExitOnError)
 	del := fs.Bool("delete-branch", false, "also delete the workspace branch")
-	if err := fs.Parse(args); err != nil {
+	if err := parseArgs(fs, args); err != nil {
 		return err
 	}
 	if fs.NArg() != 1 {
@@ -133,7 +171,7 @@ func cmdList(args []string) error {
 func cmdStatus(args []string) error {
 	fs := flag.NewFlagSet("status", flag.ExitOnError)
 	verbose := fs.Bool("v", false, "show every service, not only the changed ones")
-	if err := fs.Parse(args); err != nil {
+	if err := parseArgs(fs, args); err != nil {
 		return err
 	}
 	m, err := manager()
@@ -144,6 +182,16 @@ func cmdStatus(args []string) error {
 	// Which directory are we comparing? A named workspace, or the worktree the
 	// command was run from.
 	target, label := m.Here, filepath.Base(m.Here)
+	// Prefer the workspace ID over the directory basename, so status run from
+	// inside a workspace names it the same way bop ls does.
+	if all, err := m.List(); err == nil {
+		for _, w := range all {
+			if w.Dir == m.Here {
+				label = w.ID
+				break
+			}
+		}
+	}
 	if fs.NArg() == 1 {
 		w, found, err := m.Get(workspace.NormalizeID(fs.Arg(0)))
 		if err != nil {
