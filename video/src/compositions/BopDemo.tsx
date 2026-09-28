@@ -149,9 +149,11 @@ const Up: React.FC = () => {
           width={820}
           lines={[
             { text: "workspace feature-x", color: C.text, bold: true },
-            { text: "  dir    ~/myapp-feature-x", color: C.dim },
-            { text: "  branch feature-x (from main)", color: C.dim },
-            { text: "  host   feature-x.localhost", color: C.dim },
+            { text: "  dir     ~/myapp-feature-x", color: C.dim },
+            { text: "  branch  feature-x (from main)", color: C.dim },
+            { text: "  env     starting 1 of 4 services...", color: C.dim },
+            { text: "  overlay orders", color: C.blue },
+            { text: "  url     http://feature-x.localhost:8080", color: C.green },
           ]}
         />
         <div style={{ ...stat, marginTop: 34, textAlign: "center" }}>
@@ -286,6 +288,107 @@ const Status: React.FC = () => {
   );
 };
 
+/* ----------------------------------------------------------- bop headers */
+const Headers: React.FC = () => {
+  const frame = useCurrentFrame();
+  const head = useFadeUp(2);
+  const rowIn = (at: number) =>
+    interpolate(frame, [at, at + 14], [0, 1], {
+      extrapolateLeft: "clamp",
+      extrapolateRight: "clamp",
+    });
+  const note = useFadeUp(96);
+
+  // Fixed column widths, so both rows line up however wide the tag text is.
+  const Row: React.FC<{
+    at: number;
+    tag: string;
+    tagColor: string;
+    overlay: boolean;
+    label: string;
+  }> = ({ at, tag, tagColor, overlay, label }) => (
+    <div
+      style={{
+        opacity: rowIn(at),
+        display: "flex",
+        alignItems: "center",
+        fontFamily: FONT_MONO,
+        fontSize: 19,
+      }}
+    >
+      <div style={{ width: 130 }}>
+        <ServiceBox label="payments" scale={0.8} />
+      </div>
+      <div style={{ width: 300, textAlign: "center", color: tagColor }}>{tag}</div>
+      <div style={{ display: "flex", alignItems: "center", width: 70 }}>
+        <div style={{ flex: 1, height: 2, background: tagColor }} />
+        <div
+          style={{
+            width: 0,
+            height: 0,
+            borderTop: "6px solid transparent",
+            borderBottom: "6px solid transparent",
+            borderLeft: `9px solid ${tagColor}`,
+          }}
+        />
+      </div>
+      <div style={{ width: 150, textAlign: "center" }}>
+        <ServiceBox label="orders" scale={0.8} tone={overlay ? "changed" : "base"} />
+        <div style={{ fontSize: 14, color: overlay ? C.blue : C.dim, marginTop: 5 }}>{label}</div>
+      </div>
+    </div>
+  );
+
+  return (
+    <Stage>
+      <SceneTitle>bop headers on</SceneTitle>
+      <AbsoluteFill style={{ justifyContent: "center", alignItems: "center" }}>
+        <div style={{ ...head, fontSize: 32, color: C.text, marginBottom: 12 }}>
+          A baseline service can reach the overlay
+        </div>
+        <div style={{ ...head, fontSize: 21, color: C.dim, marginBottom: 30 }}>
+          so the changed service no longer has to sit at the edge
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+          <Row at={24} tag="calls orders" tagColor={C.dim} overlay={false} label="baseline" />
+          <Row at={54} tag="X-Worktree: feature-x" tagColor={C.violet} overlay label="overlay" />
+        </div>
+        <div style={{ ...note, marginTop: 30, fontSize: 21, color: C.dim, textAlign: "center" }}>
+          Opt-in. Your services must forward the header —{" "}
+          <span style={{ color: C.amber }}>the tool cannot do that for you</span>
+        </div>
+      </AbsoluteFill>
+    </Stage>
+  );
+};
+
+/* ------------------------------------------------------------- bop clean */
+const Clean: React.FC = () => {
+  const note = useFadeUp(64);
+  return (
+    <Stage>
+      <SceneTitle>bop clean</SceneTitle>
+      <AbsoluteFill style={{ justifyContent: "center", alignItems: "center" }}>
+        <Terminal
+          start={4}
+          command="bop clean"
+          width={900}
+          lineDelay={8}
+          lines={[
+            { text: "ACTION  KIND       NAME                   WHY", color: C.dim },
+            { text: "stop    container  ws-feature-x-orders-1  idle 4h12m", color: C.amber },
+            { text: "remove  container  ws-old-orders-1        workspace no longer exists", color: C.red },
+          ]}
+        />
+        <div style={{ ...note, marginTop: 30, fontSize: 21, color: C.dim, textAlign: "center" }}>
+          Docker records no last-access time.{" "}
+          <span style={{ color: C.text }}>The proxy log does.</span>
+        </div>
+      </AbsoluteFill>
+    </Stage>
+  );
+};
+
 /* -------------------------------------------------------------- bop down */
 const Down: React.FC = () => {
   const frame = useCurrentFrame();
@@ -348,6 +451,12 @@ export const BopDemo: React.FC = () => (
     </Sequence>
     <Sequence from={SCENES.status.from} durationInFrames={SCENES.status.dur}>
       <Status />
+    </Sequence>
+    <Sequence from={SCENES.headers.from} durationInFrames={SCENES.headers.dur}>
+      <Headers />
+    </Sequence>
+    <Sequence from={SCENES.clean.from} durationInFrames={SCENES.clean.dur}>
+      <Clean />
     </Sequence>
     <Sequence from={SCENES.down.from} durationInFrames={SCENES.down.dur}>
       <Down />

@@ -1,7 +1,8 @@
 # bop demo video
 
-A Remotion animation showing the `bop` workflow: `bop up`, `bop status`, `bop down`,
-with the copy-on-write numbers and the baseline-plus-overlay idea.
+A Remotion animation showing the `bop` workflow: `bop up`, `bop status`,
+`bop headers on`, `bop clean` and `bop down`, with the copy-on-write numbers and the
+baseline-plus-overlay idea.
 
 Every figure on screen is measured, not invented:
 
@@ -16,9 +17,9 @@ npm run studio     # preview at http://localhost:3000
 npm run render     # writes out/bop.mp4
 ```
 
-1280×720, 30 fps, 665 frames (22 s).
+1280×720, 30 fps, 920 frames (31 s).
 
-The committed copies live in `../docs/`: `demo.gif` (960×540, 15 fps, 1.8 MB) is what
+The committed copies live in `../docs/`: `demo.gif` (960×540, 15 fps, 2.5 MB) is what
 the top-level README embeds, because GitHub will not play a repo-relative `.mp4`
 inline. `demo.mp4` is the full-resolution version. Regenerate both with:
 
@@ -36,7 +37,7 @@ src/
   Root.tsx                  the composition
   theme.ts                  palette, fonts, scene boundaries
   components.tsx            Terminal, ServiceBox, entrance helpers
-  compositions/BopDemo.tsx  the six scenes
+  compositions/BopDemo.tsx  the eight scenes
 ```
 
 Scene boundaries live in `theme.ts` so `Root.tsx` and the composition cannot disagree

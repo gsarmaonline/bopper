@@ -14,7 +14,7 @@ rationale.
 ![bop in use](docs/demo.gif)
 
 Every figure in the demo is measured, not invented. The disk and time numbers come
-from [Spike B](spikes/b-reflink.md); the fall-through behaviour comes from
+from [Spike B](spikes/b-reflink.md); the fall-through and header routing from
 [Spike A](spikes/a-networking.md); the stack cost from
 [the measurement](spikes/d-stack-cost.md). Higher quality copy:
 [docs/demo.mp4](docs/demo.mp4). Source and build instructions: [video/](video/).

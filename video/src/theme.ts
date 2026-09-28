@@ -22,9 +22,11 @@ export const FONT_SANS =
 export const SCENES = {
   title: { from: 0, dur: 70 },
   problem: { from: 70, dur: 110 },
-  up: { from: 180, dur: 150 },
-  overlay: { from: 330, dur: 130 },
-  status: { from: 460, dur: 110 },
-  down: { from: 570, dur: 95 },
+  up: { from: 180, dur: 155 },
+  overlay: { from: 335, dur: 130 },
+  status: { from: 465, dur: 105 },
+  headers: { from: 570, dur: 145 },
+  clean: { from: 715, dur: 110 },
+  down: { from: 825, dur: 95 },
 };
-export const TOTAL = 665;
+export const TOTAL = 920;
