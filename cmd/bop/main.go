@@ -16,7 +16,9 @@ import (
 	"time"
 
 	"github.com/compose-spec/compose-go/v2/types"
+	"github.com/gsarmaonline/bopper/internal/data"
 	"github.com/gsarmaonline/bopper/internal/detect"
+	"github.com/gsarmaonline/bopper/internal/envfile"
 	"github.com/gsarmaonline/bopper/internal/environment"
 	"github.com/gsarmaonline/bopper/internal/workspace"
 )
@@ -24,7 +26,8 @@ import (
 const usage = `bop - copy-on-write Docker Compose for git worktrees
 
 Usage:
-  bop up <name> [-base <branch>] [-no-env]  create a workspace and start its overlay
+  bop up <name> [-base <branch>] [-no-env] [-share-db|-isolate-db]
+                                            create a workspace and start its overlay
   bop down <name> [-delete-branch]          remove a workspace and its containers
   bop ls                                    list workspaces
   bop status [<name>] [-v]                  show which services a workspace changes
@@ -122,6 +125,8 @@ func cmdUp(args []string) error {
 	fs := flag.NewFlagSet("up", flag.ExitOnError)
 	base := fs.String("base", "", "branch to fork from (default: the current branch)")
 	noEnv := fs.Bool("no-env", false, "create the workspace only; do not start containers")
+	shareDB := fs.Bool("share-db", false, "share the baseline database with writes, accepting the risk")
+	isolateDB := fs.Bool("isolate-db", false, "always give this workspace its own database")
 	verbose := fs.Bool("v", false, "stream docker output")
 	if err := parseArgs(fs, args); err != nil {
 		return err
@@ -167,20 +172,48 @@ func cmdUp(args []string) error {
 		fmt.Printf("         the worktree is ready; run bop up again once docker is up\n")
 		return nil
 	}
-	return startEnv(ctx, m, w, *verbose)
+	mode := data.Auto
+	switch {
+	case *shareDB && *isolateDB:
+		return fmt.Errorf("-share-db and -isolate-db contradict each other")
+	case *shareDB:
+		mode = data.Share
+	case *isolateDB:
+		mode = data.Isolate
+	}
+	return startEnv(ctx, m, w, *verbose, mode)
 }
 
 // startEnv compares the workspace against the baseline and runs what changed.
-func startEnv(ctx context.Context, m *workspace.Manager, w workspace.Workspace, verbose bool) error {
-	changed, project, err := changedServices(ctx, m.Root, w.Dir)
-	if err != nil {
-		return err
-	}
+//
+// The data step runs BEFORE the overlay, and that ordering is load-bearing:
+// it rewrites .env, and compose reads .env when the overlay starts. Doing it
+// afterwards would start the overlay pointed at the wrong database.
+func startEnv(ctx context.Context, m *workspace.Manager, w workspace.Workspace,
+	verbose bool, dbMode data.Mode) error {
+
 	r, err := environment.NewRunner()
 	if err != nil {
 		return err
 	}
 	r.Verbose = verbose
+
+	// The baseline must be up before anything can be asked of its database.
+	basePrj, err := detect.LoadForRun(ctx, m.Root, nil)
+	if err != nil {
+		return err
+	}
+	if err := r.EnsureBaseline(ctx, m.Root, basePrj.Compose); err != nil {
+		return fmt.Errorf("starting the baseline: %w", err)
+	}
+	if err := applyData(ctx, r, m.Root, w, basePrj.Compose, dbMode); err != nil {
+		return err
+	}
+
+	changed, project, err := changedServices(ctx, m.Root, w.Dir)
+	if err != nil {
+		return err
+	}
 
 	fmt.Printf("  env    starting %d of %d services...\n", len(changed), len(project.Services))
 	res, err := r.Up(ctx, environment.Target{ID: w.ID, Dir: w.Dir, Host: w.Host()},
@@ -208,6 +241,109 @@ func startEnv(ctx context.Context, m *workspace.Manager, w workspace.Workspace, 
 		fmt.Printf("\nthis branch changes every service, so the overlay saves nothing here\n")
 	}
 	return nil
+}
+
+// dropClone removes a workspace's database clone, if it has one.
+//
+// A shared database is never touched: other workspaces and the baseline are
+// still using it, and the read-only role is shared too.
+func dropClone(ctx context.Context, r *environment.Runner, baseDir string, w workspace.Workspace) error {
+	prj, err := detect.LoadForRun(ctx, baseDir, nil)
+	if err != nil {
+		return nil // no compose project; nothing to drop
+	}
+	dbs := data.Detect(prj.Compose)
+	if len(dbs) == 0 || dbs[0].Engine != data.Postgres {
+		return nil
+	}
+	db := dbs[0]
+	container, err := r.ContainerFor(ctx, db.Service)
+	if err != nil {
+		return nil // the baseline is not running; nothing to drop against
+	}
+	target := data.Decide(db, w.ID, true, "", data.Isolate).Target
+	if !data.Exists(ctx, r.Exec, container, db, target) {
+		return nil
+	}
+	if err := data.Drop(ctx, r.Exec, container, db, target); err != nil {
+		return fmt.Errorf("dropping the database clone %s: %w", target, err)
+	}
+	fmt.Printf("dropped database %s\n", target)
+	return nil
+}
+
+// applyData decides whether the workspace shares the baseline's database or
+// gets its own, then rewires .env to match.
+func applyData(ctx context.Context, r *environment.Runner, baseDir string,
+	w workspace.Workspace, project *types.Project, mode data.Mode) error {
+
+	dbs := data.Detect(project)
+	if len(dbs) == 0 {
+		return nil
+	}
+	if len(dbs) > 1 {
+		fmt.Printf("  data   %d database services found; using %q\n", len(dbs), dbs[0].Service)
+	}
+	db := dbs[0]
+	if db.Engine != data.Postgres {
+		fmt.Printf("  data   %s is not supported yet; the workspace shares it as-is\n", db.Engine)
+		return nil
+	}
+
+	differ, where, err := data.MigrationsDiffer(baseDir, w.Dir)
+	if err != nil {
+		return err
+	}
+	plan := data.Decide(db, w.ID, differ, where, mode)
+
+	container, err := r.ContainerFor(ctx, db.Service)
+	if err != nil {
+		return err
+	}
+	if err := r.WaitHealthy(ctx, container, 40); err != nil {
+		return err
+	}
+	// A running container is not a ready database.
+	if err := data.WaitReady(ctx, r.Exec, container, db, 60); err != nil {
+		return err
+	}
+
+	// The read-only role's password is derived rather than random, so a second
+	// bop up produces the same .env and does not look like a change.
+	roPassword := "bopper-" + w.ID
+
+	switch {
+	case plan.Clone:
+		if data.Exists(ctx, r.Exec, container, db, plan.Target) {
+			fmt.Printf("  data   own database %s (existing)\n", plan.Target)
+		} else {
+			how, err := data.Clone(ctx, r.Exec, container, db, plan.Target)
+			if err != nil {
+				return fmt.Errorf("cloning the database: %w", err)
+			}
+			fmt.Printf("  data   own database %s (%s) - %s\n", plan.Target, how, plan.Reason)
+		}
+	case plan.ReadOnly:
+		if err := data.EnsureReadOnly(ctx, r.Exec, container, db, roPassword); err != nil {
+			return fmt.Errorf("creating the read-only role: %w", err)
+		}
+		fmt.Printf("  data   shared, read-only - %s\n", plan.Reason)
+	default:
+		// Shared WITH writes, which only happens on an explicit -share-db. This
+		// is the one configuration where a workspace can corrupt the baseline's
+		// data and every other workspace's view of it, so it says so.
+		fmt.Printf("  data   shared, WRITABLE - %s\n", plan.Reason)
+		fmt.Printf("         writes and migrations from this workspace affect the\n")
+		fmt.Printf("         baseline and every other worktree\n")
+	}
+
+	// The database's hostname on the container network is its service name.
+	vars := data.EnvFor(plan, db.Service, envfile.Read(filepath.Join(w.Dir, ".env")), roPassword)
+	return envfile.Patch(filepath.Join(w.Dir, ".env"), append([][2]string{
+		{"BOPPER_WORKSPACE", w.ID},
+		{"BOPPER_HOST", w.Host()},
+		{"COMPOSE_PROJECT_NAME", "bopper-ws-" + w.ID},
+	}, vars...))
 }
 
 // changedServices loads both projects and diffs them.
@@ -269,6 +405,12 @@ func cmdDown(args []string) error {
 			r, err := environment.NewRunner()
 			if err != nil {
 				return err
+			}
+			// The database clone goes before the containers, because dropping it
+			// needs the baseline's database container, and reading the project
+			// needs the worktree.
+			if err := dropClone(ctx, r, m.Root, w); err != nil {
+				fmt.Fprintf(os.Stderr, "bop: %v\n", err)
 			}
 			if err := r.Down(ctx, environment.Target{ID: w.ID, Dir: w.Dir}); err != nil {
 				return fmt.Errorf("stopping the overlay: %w", err)

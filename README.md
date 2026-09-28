@@ -5,11 +5,10 @@ Run one Docker Compose stack, and give each git worktree only the containers it 
 **Status: working.** `bop up` creates a reflinked worktree, works out which services
 the branch changed, and starts only those — reachable at `<id>.localhost` through a
 shared proxy, with everything else falling through to one shared baseline stack.
+The database is shared read-only, and cloned when the branch's migrations differ.
 `bop clean` reclaims what goes idle. `bop headers on` lets a baseline service reach
-an overlay. The data layer is the one piece still unbuilt: databases are shared as
-they are, with no clone on a differing migration (Phase 4). See
-[roadmap.md](roadmap.md) for the phases, and [vision.md](vision.md) for the
-rationale.
+an overlay. All six phases are built. See [roadmap.md](roadmap.md) for what each one
+settled, and [vision.md](vision.md) for the rationale.
 
 ![bop in use](docs/demo.gif)
 
@@ -93,7 +92,7 @@ Four mechanisms, each sharing by default and copying only on change:
 | Filesystem | Reflink clone of the main working directory                                  | done    |
 | Detection  | A hash of each service's build inputs, compared against the baseline         | done    |
 | Services   | Changed services only, on a workspace network that falls through to baseline | done    |
-| Data       | Shared read-only, cloned only when a migration differs                       | Phase 4 |
+| Data       | Shared read-only, cloned only when a migration differs                       | done    |
 | Lifecycle  | Everything labelled; idle overlays stopped, orphans reclaimed                | done    |
 | Routing    | `X-Worktree` lets a baseline service reach an overlay (opt-in)              | done    |
 
@@ -110,19 +109,29 @@ would otherwise corrupt the shared resource, and when you ask for a copy.
 | Resource                        | Default                                              | Copy when                                            | Built  |
 | ------------------------------- | ---------------------------------------------------- | ---------------------------------------------------- | ------ |
 | Services                        | The baseline serves every service                    | The service's build inputs changed                   | yes    |
+| Database                        | Shared with the baseline, through a read-only role   | The branch's migrations differ, or you ask           | yes    |
 | Queue consumers, scheduled jobs | The baseline's keep running; the overlay starts none | You ask                                              | partly |
-| Database                        | Shared with the baseline, through a read-only role   | The branch changes a migration or writes, or you ask | **no** |
-| Cache                           | Shared keys, so the overlay starts warm              | You ask                                              | **no** |
+| Cache                           | Shared keys, so the overlay starts warm              | You ask                                              | no     |
 
-> **The data rows are the design, not the behaviour.** Phase 4 is unbuilt, so a
-> workspace today connects to the baseline database exactly as the baseline does,
-> with full write access and no clone. **A migration run in a workspace alters the
-> shared database for the baseline and every other worktree.** There is no read-only
-> role, no `--share db`, and no `--isolate`. Until Phase 4 lands, treat a
-> schema-changing branch as something to run against its own database by hand.
+The database is shared through a read-only role, so a workspace reads the baseline's
+real data — no seed, no wait — and **cannot** write to it. A branch whose migrations
+differ from the baseline's gets its own database without being asked, because that
+migration would otherwise change the schema for every other worktree.
 
-An overlay does start no queue consumer and no scheduled job, because it only runs
-the services it was told to; there is no `--isolate` flag to turn that back on yet.
+```
+bop up feature-x                 # shared read-only, or cloned if migrations differ
+bop up feature-x -isolate-db     # always its own database
+bop up feature-x -share-db       # shared WITH writes; affects everyone
+```
+
+Bopper exports `BOPPER_DB_NAME` and `BOPPER_DB_URL`, and additionally rewrites a
+variable your project already uses — `DATABASE_URL`, `DB_NAME`, `POSTGRES_DB` and a
+few others — so the common case needs no change to your Compose file. It does not
+invent variables your application never reads.
+
+Postgres only for now; MySQL is detected and declined rather than half-supported.
+An overlay starts no queue consumer and no scheduled job, because it only runs the
+services it was told to, but there is no `-isolate` flag for caches yet.
 
 ## What this does not solve yet
 
@@ -132,9 +141,12 @@ the services it was told to; there is no `--isolate` flag to turn that back on y
   next hop to the baseline version, and nothing looks wrong. Propagation is the
   application's job. It is off by default, because it also puts every internal
   baseline call through the proxy.
-- **Databases are shared as they are, with write access.** Nothing clones on a
-  differing migration, so a migration run in a workspace changes the schema for the
-  baseline and every other worktree. This is the largest gap in the tool (Phase 4).
+- **`CREATE DATABASE … TEMPLATE` is a full copy, not a copy-on-write clone.** Bopper
+  uses it when it can and falls back to a dump and restore when the baseline has live
+  connections. Only a ZFS or btrfs snapshot of the data directory would be genuinely
+  cheap, and that is not built.
+- **Caches are shared with no isolation option.** A branch that changes a cached
+  value's shape can poison a shared key.
 - **A branch that changes a queue consumer or a scheduled job needs `--isolate`.**
   Two copies of a singleton compete for the same messages.
 - **One branch in five changes every service**, through shared code or a lockfile.

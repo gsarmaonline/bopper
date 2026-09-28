@@ -3,7 +3,7 @@
 Six phases. The order follows risk, not feature value. The two assumptions that could
 sink the design get tested before anything is built.
 
-Phases 0 to 3, 5 and 6 are done. Phase 4, the data layer, is the only one left.
+All six phases are done. What each one settled, and what it cost, is below.
 
 | Phase | Delivers                              | Exit test                                                      | Status |
 | ----- | ------------------------------------- | -------------------------------------------------------------- | ------ |
@@ -11,7 +11,7 @@ Phases 0 to 3, 5 and 6 are done. Phase 4, the data layer, is the only one left.
 | 1     | Workspace layer: `bop up` / `bop down` | Workspaces create and destroy reliably                         | DONE   |
 | 2     | Change detection: `bop status`         | No false negatives on a corpus of real changes                 | DONE   |
 | 3     | Partial stack, no header routing      | A one-service change starts one container; the app works       | DONE   |
-| 4     | Data: read-only default, clone on need | A schema branch clones, a code branch shares, neither breaks   | ONLY ONE LEFT |
+| 4     | Data: read-only default, clone on need | A schema branch clones, a code branch shares, neither breaks   | DONE   |
 | 5     | Lifecycle: labels, `bop ls`, `bop clean` | Ten workspaces left a week do not fill the disk              | DONE   |
 | 6     | Header routing                        | A non-edge service receives tagged traffic                     | DONE   |
 
@@ -159,16 +159,46 @@ the restart when it has not.
 reachable at `http://<id>.localhost:8080`, and teardown leaves no overlay container,
 network, route file, worktree or branch behind.
 
-## Phase 4 — Data
+## Phase 4 — Data. DONE
 
-A read-only role on the baseline database as the default, which makes sharing provably
-safe with no proxy and no parser. Detection of differing migrations, and a clone for
-those branches. Both clone paths: a `CREATE DATABASE … TEMPLATE` copy from an idle
-template database, and a ZFS or btrfs snapshot. The `--share db` and `--isolate`
-overrides.
+`internal/data`, wired into `bop up` ahead of the overlay — the ordering is
+load-bearing, because the data step rewrites `.env` and compose reads `.env` when the
+overlay starts.
 
-**Exit:** a schema-changing branch gets a clone, a code-only branch shares the
-baseline, and neither breaks the other.
+**The read-only role is the whole safety argument.** Sharing the baseline's real data
+is what most branches want, and a `GRANT` makes it provably safe with no proxy, no
+parser and no statement inspection. Verified against a live database: `SELECT`
+succeeds, `INSERT` returns *permission denied for table orders*, `CREATE TABLE`
+returns *permission denied for schema public*.
+
+`ALTER DEFAULT PRIVILEGES` matters as much as the grant itself. Without it a table
+created later is invisible to the role, and a workspace fails at runtime on exactly
+the tables a colleague just added.
+
+**Cloning** triggers on a migration-directory difference, checked across the
+conventional locations. Verified: a branch adding `002_add_col.sql` got
+`bopper_schema` carrying the baseline's rows, and running its migration there left the
+baseline untouched — clone `id,total,note` against baseline `id,total`.
+
+`CREATE DATABASE … TEMPLATE` is tried first and falls back to a dump and restore,
+because TEMPLATE requires that nothing is connected to the source and a running
+baseline usually violates that. **TEMPLATE is a full file copy, not a copy-on-write
+clone** — `vision.md` conflated the two, and only a ZFS or btrfs snapshot would be
+genuinely cheap. That path is not built.
+
+**Three defects the build surfaced:**
+
+- A running container is not a ready database. Postgres reports running well before
+  it accepts connections, and SQL in that window fails with a missing socket, which
+  reads like a configuration error and is not one. `pg_isready` is the real question.
+- SQL must not travel through a shell. `DO $$ … $$` arrived as `DO 81 …` because the
+  shell expanded `$$` to its own PID. The password is now passed as a container
+  environment variable and no shell is involved.
+- `-share-db` fell through to the read-only branch, so the one flag whose whole
+  purpose is granting writes was silently connecting read-only.
+
+**Exit met:** a schema-changing branch gets a clone, a code-only branch shares the
+baseline read-only, neither breaks the other, and `bop down` drops the clone.
 
 ## Phase 5 — Lifecycle. DONE
 

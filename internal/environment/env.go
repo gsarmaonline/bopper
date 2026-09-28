@@ -92,6 +92,13 @@ func (r *Runner) Up(ctx context.Context, t Target, baselineDir string,
 	return res, nil
 }
 
+// EnsureBaseline brings the baseline up in whichever mode is configured. It is
+// exported because the data layer needs the baseline running before it can ask
+// anything of its database.
+func (r *Runner) EnsureBaseline(ctx context.Context, dir string, project *types.Project) error {
+	return r.startBaseline(ctx, dir, project)
+}
+
 // startBaseline brings the baseline up in whichever mode is configured.
 func (r *Runner) startBaseline(ctx context.Context, dir string, project *types.Project) error {
 	if !r.HeaderRouting() {

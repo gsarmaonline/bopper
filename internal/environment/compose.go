@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/compose-spec/compose-go/v2/types"
 )
@@ -221,4 +222,53 @@ func atoi(s string) int {
 		n = n*10 + int(c-'0')
 	}
 	return n
+}
+
+// ContainerFor finds the baseline's container for one compose service.
+//
+// Under header routing the baseline's service keys are renamed, so the compose
+// service label is looked up under both names rather than assumed.
+func (r *Runner) ContainerFor(ctx context.Context, service string) (string, error) {
+	for _, key := range []string{service, BaselineName(service)} {
+		out, err := r.run(ctx, "docker", "ps", "--format", "{{.Names}}",
+			"--filter", "label=com.docker.compose.project="+BaselineProject,
+			"--filter", "label=com.docker.compose.service="+key)
+		if err == nil && out != "" {
+			return strings.Split(out, "\n")[0], nil
+		}
+	}
+	return "", fmt.Errorf("no running baseline container for service %q", service)
+}
+
+// Exec runs a command inside a container with env set on the process. It is the
+// seam the data package uses, so that package never shells out to Docker.
+//
+// Passing env through docker rather than a shell keeps SQL out of shell parsing
+// entirely.
+func (r *Runner) Exec(ctx context.Context, container string, env []string, args ...string) (string, error) {
+	full := []string{"exec"}
+	for _, e := range env {
+		full = append(full, "-e", e)
+	}
+	full = append(full, container)
+	return r.run(ctx, "docker", append(full, args...)...)
+}
+
+// WaitHealthy blocks until a container reports running, so a database is
+// actually accepting connections before Bopper issues SQL against it.
+func (r *Runner) WaitHealthy(ctx context.Context, container string, attempts int) error {
+	var last error
+	for i := 0; i < attempts; i++ {
+		out, err := r.run(ctx, "docker", "inspect", "-f", "{{.State.Running}}", container)
+		if err == nil && strings.TrimSpace(out) == "true" {
+			return nil
+		}
+		last = err
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(500 * time.Millisecond):
+		}
+	}
+	return fmt.Errorf("container %s did not become ready: %v", container, last)
 }

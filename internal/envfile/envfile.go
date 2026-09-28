@@ -51,3 +51,25 @@ func Patch(path string, vars [][2]string) error {
 	}
 	return os.WriteFile(path, []byte(sb.String()), 0o644)
 }
+
+// Read returns the developer's own variables from a .env, excluding Bopper's
+// managed block. It is how the data layer tells which database variables a
+// project actually uses, so Bopper overrides those rather than inventing
+// variables the application never reads.
+func Read(path string) map[string]string {
+	out := map[string]string{}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return out
+	}
+	for _, line := range strings.Split(string(StripManaged(b)), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if i := strings.IndexByte(line, '='); i > 0 {
+			out[strings.TrimSpace(line[:i])] = strings.TrimSpace(line[i+1:])
+		}
+	}
+	return out
+}
