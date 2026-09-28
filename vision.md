@@ -1,7 +1,5 @@
 # Bopper: Copy-on-Write Docker Compose for Git Worktrees
 
-Sep 28, 2026 · @Gaurav Sarma
-
 ## Summary
 
 Running the same Docker Compose stack across several git worktrees means duplicating the whole stack per worktree, even when a branch changes one service. The proposal is to apply copy-on-write at every layer: reflinked working directories, content-addressed detection of changed services, overlays on a shared baseline stack, and cloned databases. Each worktree then pays only for what it changed. The working name is Bopper, with a bop CLI.

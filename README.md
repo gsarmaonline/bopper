@@ -87,4 +87,4 @@ cache,queues` says otherwise.
 
 ## License
 
-Not yet chosen.
+MIT. See [LICENSE](LICENSE).
