@@ -5,15 +5,15 @@ sink the design get tested before anything is built.
 
 Phases 0 to 3 are the product. Phases 4 to 6 are follow-ons.
 
-| Phase | Delivers                              | Exit test                                                      |
-| ----- | ------------------------------------- | -------------------------------------------------------------- |
-| 0     | Two spikes and a measured baseline    | Both spikes documented; the numbers recorded                   |
-| 1     | Workspace layer: `bop up` / `bop down` | Workspaces create and destroy reliably                         |
-| 2     | Change detection: `bop status`         | No false negatives on a corpus of real changes                 |
-| 3     | Partial stack, no header routing      | A one-service change starts one container; the app works       |
-| 4     | Data: read-only default, clone on need | A schema branch clones, a code branch shares, neither breaks   |
-| 5     | Lifecycle: labels, `bop ls`, `bop clean` | Ten workspaces left a week do not fill the disk              |
-| 6     | Header routing                        | A non-edge service receives tagged traffic                     |
+| Phase | Delivers                              | Exit test                                                      | Status |
+| ----- | ------------------------------------- | -------------------------------------------------------------- | ------ |
+| 0     | Three spikes and a measured baseline  | Spikes documented; the numbers recorded                        | DONE   |
+| 1     | Workspace layer: `bop up` / `bop down` | Workspaces create and destroy reliably                         | DONE   |
+| 2     | Change detection: `bop status`         | No false negatives on a corpus of real changes                 | DONE   |
+| 3     | Partial stack, no header routing      | A one-service change starts one container; the app works       | next   |
+| 4     | Data: read-only default, clone on need | A schema branch clones, a code branch shares, neither breaks   |        |
+| 5     | Lifecycle: labels, `bop ls`, `bop clean` | Ten workspaces left a week do not fill the disk              |        |
+| 6     | Header routing                        | A non-edge service receives tagged traffic                     |        |
 
 ## Phase 0 — Prove the primitives by hand
 
@@ -49,34 +49,64 @@ a full stack gracefully, because that is not an edge case at one in five branche
 **Exit:** both spikes documented and the numbers recorded. If either spike fails, the
 design changes before any code exists.
 
-## Phase 1 — Workspace layer
+## Phase 1 — Workspace layer. DONE
 
-`bop up` and `bop down` that touch git and the filesystem only. No containers. Create
-the worktree, reflink-clone the working directory and its ignored artifacts, patch
-`.env` with the workspace ID and hostname, write metadata, and remove it all cleanly.
+`bop up`, `bop down` and `bop ls`, in `internal/workspace`, `internal/git`,
+`internal/clone` and `internal/envfile`. Git and the filesystem only; nothing here
+imports Docker.
 
-This is the workspace half of the two-layer split. It outputs a workspace ID and a
-directory, and it never calls Docker.
+State lives in the shared `.git` directory, never in the working tree, so it can
+neither appear as an untracked file nor be cloned into a workspace. Directories are
+removed only through `git worktree remove`, which refuses any path git does not
+already track as a worktree - Bopper never deletes a directory by path.
 
-**Exit:** workspaces create and destroy reliably, with disk use measured against a
-plain `git worktree add`.
+Two defects the tests now guard:
 
-## Phase 2 — Change detection
+- `filepath.Join(src, ".")` cleans away the trailing `/.`, turning the merging copy
+  into a nesting one that produced `payments/payments/`. The overlay must build that
+  path by string concatenation.
+- `Overlay` assumed its destination existed. It does in the `bop up` flow, but not in
+  general.
 
-`bop status` prints which services changed against the baseline, by input hash. No
-orchestration. The work sits in defining the inputs correctly: the context files that
-survive `.dockerignore`, the Dockerfile, the build args, the base image digest and the
-resolved Compose fragment.
+**Exit met:** workspaces create and destroy reliably, ignored artifacts arrive without
+a reinstall, `.git` survives as the worktree's own file, the baseline's `.env` is
+untouched, and a hand-deleted worktree does not wedge the next `bop up`.
 
-**Exit:** no false negatives on a corpus of real changes. A lockfile edit must flip
-every service that depends on it.
+## Phase 2 — Change detection. DONE
 
-**Phases 1 and 2 are independent and can run in parallel.** Detection needs two
-directories and a Compose file. It needs nothing from the workspace layer. This is the
-first test of the narrow boundary between the two layers, and it is worth confirming
-that the boundary holds.
+`bop status` prints which services a workspace changes, by input hash, in
+`internal/detect`. No build runs. It distinguishes `build` from `config`, so a
+rebuild is visibly different from a restart.
 
-## Phase 3 — Partial stack
+Hashed: the context files that survive `.dockerignore`, the Dockerfile, its `FROM`
+lines, the build args and target, and the resolved runtime configuration.
+
+Three normalizations were needed, and each was found by a test that failed:
+
+- **Absolute paths.** A workspace lives elsewhere, so its volume sources all differ.
+  The project directory is rewritten to a placeholder before hashing.
+- **Workspace identity variables.** `BOPPER_WORKSPACE` and friends are replaced with
+  fixed sentinels *before* interpolation, on both sides. Normalizing afterwards does
+  not work: `${BOPPER_WORKSPACE:-baseline}` resolves to the ID in a workspace and to
+  the literal `baseline` in the baseline, so rewriting the ID leaves two different
+  strings.
+- **Bopper's own `.env` block.** A build context usually contains `.env`, and Bopper
+  patched it. The managed block is stripped before hashing, with trailing whitespace
+  trimmed on both paths - trimming only when a marker was found made `FOO=bar` differ
+  from `FOO=bar\n`.
+
+**Exit met:** the test corpus covers both Compose patterns. With per-service contexts
+a source change flips exactly one service; with a monorepo `context: .` a lockfile
+change flips every service, which is correct and is why Spike C's honest numbers are
+worse than its flattering ones. `.dockerignore`d files are not inputs, and two
+identical checkouts report no change at all.
+
+**Phases 1 and 2 were independent and were built in parallel**, as predicted. Detection
+needs two directories and a Compose file and nothing from the workspace layer. The
+narrow boundary held; the only coupling that emerged was the `.env` marker, which now
+lives in its own package that both sides import.
+
+## Phase 3 — Partial stack. NEXT
 
 The first end-to-end useful version. Start only the changed services, on the baseline
 network, under the naming rule from Phase 0, pointed at baseline hostnames for
@@ -155,6 +185,6 @@ These block the phases named beside them.
 
 | Question                                                            | Blocks  |
 | ------------------------------------------------------------------- | ------- |
-| Which build inputs enter the hash, and which are safe to omit?      | Phase 2 |
+| Should a lockfile change really rebuild every service, or should the closure be per-service? | Phase 2 revisit |
 | Where does the idle template database come from, and who seeds it?  | Phase 4 |
 | What does a stack cost in memory and startup seconds?               | Phase 0 |

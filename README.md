@@ -2,9 +2,10 @@
 
 Run one Docker Compose stack, and give each git worktree only the containers it changed.
 
-**Status: design proposal. No code exists yet.** This document describes the intended
-tool. The commands below do not run today. For the full rationale, the prior-art
-survey and the product direction, read [vision.md](vision.md).
+**Status: early. The workspace layer and change detection work; nothing starts
+containers yet.** `bop up`, `bop down`, `bop ls` and `bop status` are real. Routing,
+overlays and databases are Phase 3 — see [roadmap.md](roadmap.md). For the full
+rationale and the product direction, read [vision.md](vision.md).
 
 ## The problem
 
@@ -12,54 +13,80 @@ Git worktrees make several branches cheap to keep checked out. The application s
 for each one is not cheap. Docker Compose starts a full copy per worktree: every
 service, database, cache and queue.
 
-Most branches change one or two services. The rest of each copy duplicates what
-already runs for `main`. The cost appears as startup time, memory, disk, and as
-friction that stops you from running more than one or two stacks.
+Most branches change one or two services. Measured across 13,445 real branches of
+immich and penpot, about three quarters of the branches that touch any service touch
+exactly one ([spikes/c-history.md](spikes/c-history.md)). The rest of each copy
+duplicates what already runs for `main`.
 
-## The idea
-
-Run one full stack from `main`. For each worktree, start only the services that
-changed, and let everything else fall through to that shared baseline.
-
-Four mechanisms make each layer share by default and copy only on change:
-
-| Layer      | Mechanism                                                                       |
-| ---------- | ------------------------------------------------------------------------------- |
-| Filesystem | Reflink clone of the main working directory (`cp -c` on APFS, `--reflink` on btrfs and XFS) |
-| Detection  | A hash of each service's build inputs, compared against the baseline            |
-| Services   | Changed services only, joined to the baseline network behind a shared Traefik    |
-| Data       | A database clone from a seeded template, for worktrees that change the schema    |
-
-## Planned commands
+## Install
 
 ```
-bop up feature-x      # create the worktree, detect changes, start the overlay
-bop ls                # list workspaces and their running services
-bop down feature-x    # stop the overlay, drop clones, remove the worktree
-bop clean             # reclaim idle overlays, volumes and database clones
+git clone https://github.com/gsarmaonline/bopper && cd bopper
+make build          # produces bin/bop
+make install        # optional; PREFIX=~/.local make install
 ```
 
-`bop up` prints a URL. The workspace becomes reachable at `feature-x.localhost`
-through the shared Traefik.
+Requirements: Go 1.24 to build, git, and a filesystem with reflink support — APFS on
+macOS, or btrfs or XFS on Linux. Docker is not needed yet.
 
-## Requirements
+## Use
 
-- A filesystem with reflink support: APFS on macOS, or btrfs or XFS on Linux.
-- Docker with BuildKit, or Podman through its Docker-compatible socket.
-- A Compose file for the project.
-- A shared Traefik instance, which Bopper starts if none runs.
+```
+$ bop up feature-x
+workspace feature-x
+  dir    /home/you/myapp-feature-x
+  branch feature-x (from main)
+  host   feature-x.localhost  (not serving yet - Phase 3)
+
+$ bop status feature-x
+feature-x vs baseline (myapp)
+
+SERVICE   CHANGED  BASELINE          WORKSPACE
+orders    build    33e60ca063bb563b  8a2dff74283db72c
+payments  config   ab7738be1c5b0619  1c9f59e4856ba851
+
+$ bop ls
+$ bop down feature-x [-delete-branch]
+```
+
+`bop up` creates the worktree, clones the main working directory into it with
+reflinks, and patches `.env`. Dependencies and build outputs come along without a
+reinstall, and mtimes are preserved so incremental builds stay warm. On 41k files and
+1.2 GB that costs 22 MB and 9 seconds, against 1305 MB and 23–35 seconds for a real
+copy ([spikes/b-reflink.md](spikes/b-reflink.md)).
+
+`bop status` hashes each service's build inputs — context files after
+`.dockerignore`, the Dockerfile, build args, base images — and its resolved runtime
+configuration, then compares them with the baseline. It reports `build` or `config`
+so you can tell a rebuild from a restart. No build runs.
+
+## How it will work
+
+Four mechanisms, each sharing by default and copying only on change:
+
+| Layer      | Mechanism                                                                    | Status  |
+| ---------- | ---------------------------------------------------------------------------- | ------- |
+| Filesystem | Reflink clone of the main working directory                                  | done    |
+| Detection  | A hash of each service's build inputs, compared against the baseline         | done    |
+| Services   | Changed services only, on a workspace network that falls through to baseline | Phase 3 |
+| Data       | Shared read-only, cloned only when a migration differs                       | Phase 4 |
+
+The services layer rests on a measured property of Docker's resolver: a container
+attached to two networks resolves names from the alphabetically first network name,
+so a workspace network named to sort before the baseline's gives fall-through for
+free ([spikes/a-networking.md](spikes/a-networking.md)).
 
 ## What Bopper shares, and what it copies
 
 Bopper shares by default, at every layer. It copies in two cases only: when a change
 would otherwise corrupt the shared resource, and when you ask for a copy.
 
-| Resource                        | Default                                              | Copy when                                        |
-| ------------------------------- | ---------------------------------------------------- | ------------------------------------------------ |
-| Services                        | The baseline serves every service                    | The service's build inputs changed               |
+| Resource                        | Default                                              | Copy when                                            |
+| ------------------------------- | ---------------------------------------------------- | ---------------------------------------------------- |
+| Services                        | The baseline serves every service                    | The service's build inputs changed                   |
 | Database                        | Shared with the baseline, through a read-only role   | The branch changes a migration or writes, or you ask |
-| Cache                           | Shared keys, so the overlay starts warm              | You ask                                          |
-| Queue consumers, scheduled jobs | The baseline's keep running; the overlay starts none | You ask                                          |
+| Cache                           | Shared keys, so the overlay starts warm              | You ask                                              |
+| Queue consumers, scheduled jobs | The baseline's keep running; the overlay starts none | You ask                                              |
 
 The database is shared through a read-only role, so one worktree cannot corrupt
 another's data by accident. A branch that needs writes says so and gets a clone, and
@@ -70,13 +97,26 @@ cache,queues` says otherwise.
 
 ## What this does not solve yet
 
-- **A baseline service cannot call an overlay service.** The first version drops
-  header routing. It covers the common case, where the changed service sits at the
-  edge of the call graph. See "Hard edges" in [vision.md](vision.md).
+- **Nothing starts containers.** Phase 3.
+- **A baseline service cannot call an overlay service.** Header routing is Phase 6.
+  Until then the changed service must sit at the edge of the call graph.
 - **A branch that changes a queue consumer or a scheduled job needs `--isolate`.**
-  Two copies of a singleton compete for the same messages, so Bopper runs neither
-  copy in the overlay until you scope it.
-- **Builds must be reproducible enough for input hashes to stay stable.**
+  Two copies of a singleton compete for the same messages.
+- **One branch in five changes every service**, through shared code or a lockfile.
+  Those branches save nothing, and `bop up` must fall back to a full stack.
+- **Builds must be reproducible enough for input hashes to stay stable.** Base images
+  are hashed as written, so a moved tag goes unnoticed; pin them by digest.
+
+## Development
+
+```
+make            # fmt, vet, test, build
+make test
+make spikes     # re-run the Docker DNS regression test after a Docker upgrade
+```
+
+The Phase 0 experiments live in [spikes/](spikes/), each with its script and its
+findings. They are worth reading before changing the mechanisms they measured.
 
 ## Documents
 
