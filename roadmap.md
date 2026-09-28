@@ -10,7 +10,7 @@ Phases 0 to 3 are the product. Phases 4 to 6 are follow-ons.
 | 0     | Three spikes and a measured baseline  | Spikes documented; the numbers recorded                        | DONE   |
 | 1     | Workspace layer: `bop up` / `bop down` | Workspaces create and destroy reliably                         | DONE   |
 | 2     | Change detection: `bop status`         | No false negatives on a corpus of real changes                 | DONE   |
-| 3     | Partial stack, no header routing      | A one-service change starts one container; the app works       | next   |
+| 3     | Partial stack, no header routing      | A one-service change starts one container; the app works       | DONE   |
 | 4     | Data: read-only default, clone on need | A schema branch clones, a code branch shares, neither breaks   |        |
 | 5     | Lifecycle: labels, `bop ls`, `bop clean` | Ten workspaces left a week do not fill the disk              |        |
 | 6     | Header routing                        | A non-edge service receives tagged traffic                     |        |
@@ -34,7 +34,13 @@ survive every step, the incremental build stays warm, and git detects a cloned f
 whose content differs even at identical size and mtime, because the index compares
 inode and ctime too.
 
-**Measurement. MOSTLY DONE.** Spike B measured disk and time per worktree: 22 MB and
+**Measurement. DONE.** See [spikes/d-stack-cost.md](spikes/d-stack-cost.md): a
+four-service stack costs 36-50 MiB and 9 s cold; baseline plus three overlays against
+four full stacks saves 55%, which is only 79 MiB. A real proportion and a small
+absolute number on a laptop, which supports reading overlays as a
+preview-environment feature that also runs locally.
+
+**Earlier measurement notes.** Spike B measured disk and time per worktree: 22 MB and
 9 s against 1305 MB and 23-35 s for a real copy, on a 1.2 GB tree.
 [Spike C](spikes/c-history.md) measured the premise against real history from immich
 and penpot, 13,445 branches: about three quarters of service-touching branches change
@@ -106,17 +112,52 @@ needs two directories and a Compose file and nothing from the workspace layer. T
 narrow boundary held; the only coupling that emerged was the `.env` marker, which now
 lives in its own package that both sides import.
 
-## Phase 3 — Partial stack. NEXT
+## Phase 3 — Partial stack. DONE
 
-The first end-to-end useful version. Start only the changed services, on the baseline
-network, under the naming rule from Phase 0, pointed at baseline hostnames for
-everything else, and reachable at `<id>.localhost` through a shared Traefik.
+`bop up` starts the baseline once, then runs only the services the branch changed.
+`bop ps` shows what is running; `bop down` removes it. `internal/environment` holds
+it, and imports no git.
 
-No header routing. The overlay runs no queue consumer and no scheduled job, because a
-second copy of a singleton competes with the baseline's.
+**Verified against real containers.** A one-service change started one container. The
+baseline network resolved `orders` to the baseline's container 20 times out of 20,
+while the workspace network resolved it to the overlay's, and `payments` fell through
+to the baseline. Three distinct container IDs, so the isolation is measured rather
+than assumed.
 
-**Exit:** on a real project, a one-service change starts one container and the app
-works at the workspace URL.
+**Two design decisions worth keeping:**
+
+- **The overlay renames its compose service key** to `<service>--<id>`. Compose adds
+  the service key as a network alias on *every* attached network, so a key of
+  `orders` would answer to `orders` on the baseline network and split the baseline's
+  own traffic 10/10. The plain name is restored as an explicit alias on the workspace
+  network only.
+- **The proxy uses Traefik's FILE provider, not the Docker provider.** The Docker
+  provider would have Traefik rediscover, through the Docker socket, what Bopper
+  already knows for certain. It also fails outright wherever socket sharing is
+  disabled — which it was on the development machine, where no container could read
+  the socket at all. A dynamic config file needs no socket and hands the proxy no
+  control of the daemon.
+
+**Four defects the build surfaced:**
+
+- Passing any `-f` to compose suppresses its own file discovery, so the baseline came
+  up with "no service selected" until its compose file was named explicitly.
+- A `depends_on` whose every entry falls through to the baseline must have the key
+  REMOVED. Setting it to null makes compose reject the file.
+- Both networks must be `external`. Bopper pre-creates the workspace network so the
+  proxy can join it, and compose refuses to adopt a network it did not create.
+- `bop up` on an existing workspace used to error. It now re-applies, because that is
+  the command a developer reaches for after editing code.
+
+**One caveat.** Traefik's file watch is unreliable on Docker Desktop, where the mount
+crosses a VM boundary and inotify events for new files are dropped. Observed directly:
+a route file written seconds after the proxy started was never picked up and every
+request 404'd. Bopper restarts the proxy when a route file actually changes, and skips
+the restart when it has not.
+
+**Exit met:** on a real stack, a one-service change starts one container, the app is
+reachable at `http://<id>.localhost:8080`, and teardown leaves no overlay container,
+network, route file, worktree or branch behind.
 
 ## Phase 4 — Data
 
@@ -187,4 +228,3 @@ These block the phases named beside them.
 | ------------------------------------------------------------------- | ------- |
 | Should a lockfile change really rebuild every service, or should the closure be per-service? | Phase 2 revisit |
 | Where does the idle template database come from, and who seeds it?  | Phase 4 |
-| What does a stack cost in memory and startup seconds?               | Phase 0 |
