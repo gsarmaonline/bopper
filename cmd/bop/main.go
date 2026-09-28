@@ -14,19 +14,25 @@ import (
 	"strings"
 	"text/tabwriter"
 
+	"github.com/compose-spec/compose-go/v2/types"
 	"github.com/gsarmaonline/bopper/internal/detect"
+	"github.com/gsarmaonline/bopper/internal/environment"
 	"github.com/gsarmaonline/bopper/internal/workspace"
 )
 
 const usage = `bop - copy-on-write Docker Compose for git worktrees
 
 Usage:
-  bop up <name> [-base <branch>]   create a workspace
-  bop down <name> [-delete-branch] remove a workspace
-  bop ls                           list workspaces
-  bop status [<name>] [-v]         show which services a workspace changes
+  bop up <name> [-base <branch>] [-no-env]  create a workspace and start its overlay
+  bop down <name> [-delete-branch]          remove a workspace and its containers
+  bop ls                                    list workspaces
+  bop status [<name>] [-v]                  show which services a workspace changes
+  bop ps [<name>]                           show a workspace's running containers
 
-Not yet implemented: starting containers, routing, databases (Phase 3+).
+bop up starts the baseline stack once, then runs only the services the branch
+changed. Everything else falls through to the baseline.
+
+Not yet implemented: header routing, database clones (Phase 4+).
 `
 
 func main() {
@@ -44,6 +50,8 @@ func main() {
 		err = cmdList(os.Args[2:])
 	case "status":
 		err = cmdStatus(os.Args[2:])
+	case "ps":
+		err = cmdPs(os.Args[2:])
 	case "-h", "--help", "help":
 		fmt.Print(usage)
 		return
@@ -105,25 +113,122 @@ func manager() (*workspace.Manager, error) {
 func cmdUp(args []string) error {
 	fs := flag.NewFlagSet("up", flag.ExitOnError)
 	base := fs.String("base", "", "branch to fork from (default: the current branch)")
+	noEnv := fs.Bool("no-env", false, "create the workspace only; do not start containers")
+	verbose := fs.Bool("v", false, "stream docker output")
 	if err := parseArgs(fs, args); err != nil {
 		return err
 	}
 	if fs.NArg() != 1 {
-		return fmt.Errorf("usage: bop up <name> [-base <branch>]")
+		return fmt.Errorf("usage: bop up <name> [-base <branch>] [-no-env]")
 	}
 	m, err := manager()
 	if err != nil {
 		return err
 	}
-	w, err := m.Up(fs.Arg(0), workspace.UpOptions{Base: *base})
+	// bop up on an existing workspace re-applies it. That is the command a
+	// developer reaches for after editing code, and erroring here would leave
+	// them with no way to restart an overlay.
+	id := workspace.NormalizeID(fs.Arg(0))
+	w, existing, err := m.Get(id)
 	if err != nil {
 		return err
 	}
-	fmt.Printf("workspace %s\n", w.ID)
-	fmt.Printf("  dir    %s\n", w.Dir)
-	fmt.Printf("  branch %s (from %s)\n", w.Branch, w.Base)
-	fmt.Printf("  host   %s  (not serving yet - Phase 3)\n", w.Host())
+	if existing {
+		fmt.Printf("workspace %s (existing)\n", w.ID)
+		fmt.Printf("  dir    %s\n", w.Dir)
+	} else {
+		w, err = m.Up(fs.Arg(0), workspace.UpOptions{Base: *base})
+		if err != nil {
+			return err
+		}
+		fmt.Printf("workspace %s\n", w.ID)
+		fmt.Printf("  dir    %s\n", w.Dir)
+		fmt.Printf("  branch %s (from %s)\n", w.Branch, w.Base)
+	}
+
+	if *noEnv {
+		fmt.Printf("  env    skipped (-no-env)\n")
+		return nil
+	}
+
+	ctx := context.Background()
+	if err := environment.Available(ctx); err != nil {
+		// The workspace is real and useful without Docker. Say what is missing
+		// rather than unwinding work the user asked for.
+		fmt.Printf("  env    not started: %v\n", err)
+		fmt.Printf("         the worktree is ready; run bop up again once docker is up\n")
+		return nil
+	}
+	return startEnv(ctx, m, w, *verbose)
+}
+
+// startEnv compares the workspace against the baseline and runs what changed.
+func startEnv(ctx context.Context, m *workspace.Manager, w workspace.Workspace, verbose bool) error {
+	changed, project, err := changedServices(ctx, m.Root, w.Dir)
+	if err != nil {
+		return err
+	}
+	r, err := environment.NewRunner()
+	if err != nil {
+		return err
+	}
+	r.Verbose = verbose
+
+	fmt.Printf("  env    starting %d of %d services...\n", len(changed), len(project.Services))
+	res, err := r.Up(ctx, environment.Target{ID: w.ID, Dir: w.Dir, Host: w.Host()},
+		m.Root, project, changed)
+	if err != nil {
+		return err
+	}
+
+	if len(res.Changed) == 0 {
+		fmt.Printf("  env    nothing changed; the baseline serves all %d services\n", res.Total)
+		return nil
+	}
+	fmt.Printf("  overlay %s\n", strings.Join(res.Changed, ", "))
+	if res.URL != "" {
+		fmt.Printf("  url    %s\n", res.URL)
+	} else {
+		fmt.Printf("  url    none: no changed service publishes a port\n")
+	}
+	if res.FullStack {
+		// Spike C measured this at one branch in five. It is not an edge case,
+		// and it should not be a silent disappointment.
+		fmt.Printf("\nthis branch changes every service, so the overlay saves nothing here\n")
+	}
 	return nil
+}
+
+// changedServices loads both projects and diffs them.
+func changedServices(ctx context.Context, baseDir, wsDir string) ([]string, *types.Project, error) {
+	basePrj, err := detect.Load(ctx, baseDir, nil)
+	if err != nil {
+		return nil, nil, err
+	}
+	curPrj, err := detect.Load(ctx, wsDir, nil)
+	if err != nil {
+		return nil, nil, err
+	}
+	baseFP, err := basePrj.Fingerprints()
+	if err != nil {
+		return nil, nil, err
+	}
+	curFP, err := curPrj.Fingerprints()
+	if err != nil {
+		return nil, nil, err
+	}
+	var changed []string
+	for _, c := range detect.Diff(baseFP, curFP) {
+		if c.Reason != "removed" {
+			changed = append(changed, c.Service)
+		}
+	}
+	// Containers need the real environment, not the sentinels comparison uses.
+	runPrj, err := detect.LoadForRun(ctx, wsDir, nil)
+	if err != nil {
+		return nil, nil, err
+	}
+	return changed, runPrj.Compose, nil
 }
 
 func cmdDown(args []string) error {
@@ -140,11 +245,86 @@ func cmdDown(args []string) error {
 		return err
 	}
 	id := workspace.NormalizeID(fs.Arg(0))
+	w, found, err := m.Get(id)
+	if err != nil {
+		return err
+	}
+
+	// Containers first: once the worktree is gone, the compose project
+	// directory it referenced no longer exists.
+	if found {
+		ctx := context.Background()
+		if environment.Available(ctx) == nil {
+			r, err := environment.NewRunner()
+			if err != nil {
+				return err
+			}
+			if err := r.Down(ctx, environment.Target{ID: w.ID, Dir: w.Dir}); err != nil {
+				return fmt.Errorf("stopping the overlay: %w", err)
+			}
+		}
+	}
 	if err := m.Down(id, workspace.DownOptions{DeleteBranch: *del}); err != nil {
 		return err
 	}
 	fmt.Printf("removed workspace %s\n", id)
 	return nil
+}
+
+func cmdPs(args []string) error {
+	fs := flag.NewFlagSet("ps", flag.ExitOnError)
+	if err := parseArgs(fs, args); err != nil {
+		return err
+	}
+	m, err := manager()
+	if err != nil {
+		return err
+	}
+	ctx := context.Background()
+	if err := environment.Available(ctx); err != nil {
+		return err
+	}
+	r, err := environment.NewRunner()
+	if err != nil {
+		return err
+	}
+
+	ws, err := m.List()
+	if err != nil {
+		return err
+	}
+	if fs.NArg() == 1 {
+		id := workspace.NormalizeID(fs.Arg(0))
+		w, found, err := m.Get(id)
+		if err != nil {
+			return err
+		}
+		if !found {
+			return fmt.Errorf("no workspace %q", fs.Arg(0))
+		}
+		ws = []workspace.Workspace{w}
+	}
+
+	baseline := "stopped"
+	if r.BaselineRunning(ctx) {
+		baseline = "running"
+	}
+	fmt.Printf("baseline  %s  (%s)\n", baseline, environment.BaselineNetwork)
+
+	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(tw, "\nWORKSPACE\tCONTAINERS\tURL")
+	for _, w := range ws {
+		cs, err := r.OverlayContainers(ctx, w.ID)
+		if err != nil {
+			return err
+		}
+		names := "-"
+		if len(cs) > 0 {
+			names = strings.Join(cs, " ")
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%s\n", w.ID, names, environment.URL(w.Host()))
+	}
+	return tw.Flush()
 }
 
 func cmdList(args []string) error {

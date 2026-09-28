@@ -104,9 +104,16 @@ func BuildOverlay(project *types.Project, id string, services []string, routes m
 		// reached through the shared proxy instead.
 		delete(m, "ports")
 
-		// depends_on can only refer to services that exist in this project.
+		// depends_on can only name services that exist in this project. A
+		// dependency the overlay does not run is already served by the baseline,
+		// so it is dropped - and if every dependency drops, the key must be
+		// REMOVED rather than set to null, which compose rejects outright.
 		if dep, ok := m["depends_on"]; ok {
-			m["depends_on"] = renameDeps(dep, id, inOverlay)
+			if renamed := renameDeps(dep, id, inOverlay); isEmpty(renamed) {
+				delete(m, "depends_on")
+			} else {
+				m["depends_on"] = renamed
+			}
 		}
 
 		m["networks"] = map[string]any{
@@ -117,15 +124,23 @@ func BuildOverlay(project *types.Project, id string, services []string, routes m
 			"baseline": map[string]any{},
 		}
 
-		if r, ok := routes[name]; ok && r.Port > 0 && r.Host != "" {
-			m["labels"] = mergeLabels(m["labels"], traefikLabels(id, name, r))
-		}
+		// One label, for cleanup. Routing is configured through the proxy's
+		// file provider rather than container labels; see proxy.go.
+		m["labels"] = mergeLabels(m["labels"], map[string]string{"bopper.workspace": id})
 		svcs[OverlayName(name, id)] = m
 	}
 
 	out["services"] = svcs
+	// Both networks are external because Bopper owns their lifecycle, not this
+	// compose project. The workspace network must exist before the overlay runs
+	// so the shared proxy can join it, and it must survive a `compose down` so
+	// the proxy's attachment is not torn out from under it. Bopper removes it in
+	// Runner.Down once the workspace is really going away.
 	out["networks"] = map[string]any{
-		"ws": map[string]any{"name": WorkspaceNetwork(id)},
+		"ws": map[string]any{
+			"name":     WorkspaceNetwork(id),
+			"external": true,
+		},
 		"baseline": map[string]any{
 			"name":     BaselineNetwork,
 			"external": true,
@@ -185,16 +200,18 @@ func renameDeps(dep any, id string, inOverlay map[string]bool) any {
 	return nil
 }
 
-func traefikLabels(id, service string, r RouteOptions) map[string]string {
-	router := id + "-" + service
-	return map[string]string{
-		"traefik.enable": "true",
-		"traefik.http.routers." + router + ".rule":                      "Host(`" + r.Host + "`)",
-		"traefik.http.routers." + router + ".entrypoints":               "web",
-		"traefik.http.services." + router + ".loadbalancer.server.port": fmt.Sprint(r.Port),
-		"traefik.docker.network":                                        WorkspaceNetwork(id),
-		"bopper.workspace":                                              id,
+// isEmpty reports whether a serialized value would render as null or an empty
+// collection, either of which compose treats as a schema violation.
+func isEmpty(v any) bool {
+	switch x := v.(type) {
+	case nil:
+		return true
+	case map[string]any:
+		return len(x) == 0
+	case []any:
+		return len(x) == 0
 	}
+	return false
 }
 
 // mergeLabels folds Bopper's labels into whatever the service already declared,

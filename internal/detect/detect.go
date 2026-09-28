@@ -49,13 +49,25 @@ type Project struct {
 	Compose *types.Project
 }
 
-// Load reads the Compose project rooted at dir.
+// Load reads the Compose project rooted at dir, normalized for COMPARISON.
 //
-// The project name is forced to a constant. A real project name derives from the
-// directory, which differs per workspace, and it appears throughout the resolved
-// model - in container names and network references - so leaving it alone would
-// make every service look changed in every workspace.
+// The project name is forced to a constant and the workspace-identity variables
+// are replaced with sentinels, because both differ per workspace by construction
+// and would otherwise make every service look changed.
+//
+// Use LoadForRun when the project is about to be started; a container needs the
+// real values, not the sentinels.
 func Load(ctx context.Context, dir string, files []string) (*Project, error) {
+	return load(ctx, dir, files, true)
+}
+
+// LoadForRun reads the Compose project with its real environment, for starting
+// containers rather than comparing them.
+func LoadForRun(ctx context.Context, dir string, files []string) (*Project, error) {
+	return load(ctx, dir, files, false)
+}
+
+func load(ctx context.Context, dir string, files []string, normalize bool) (*Project, error) {
 	if len(files) == 0 {
 		found, err := findComposeFile(dir)
 		if err != nil {
@@ -71,20 +83,22 @@ func Load(ctx context.Context, dir string, files []string) (*Project, error) {
 		cfgs = append(cfgs, types.ConfigFile{Filename: f})
 	}
 
-	env := environment(dir)
+	env := readEnv(dir)
+	if normalize {
+		neutralize(env)
+	}
 	p, err := loader.LoadWithContext(ctx, types.ConfigDetails{
 		WorkingDir:  dir,
 		ConfigFiles: cfgs,
 		Environment: env,
 	}, func(o *loader.Options) {
-		o.SetProjectName("bopper", true)
+		o.SetProjectName(sentinelProject, true)
 		o.ResolvePaths = true
 		o.SkipValidation = false
 	})
 	if err != nil {
 		return nil, fmt.Errorf("loading compose in %s: %w", dir, err)
 	}
-	_ = env
 	return &Project{Dir: dir, Compose: p}, nil
 }
 
@@ -118,9 +132,8 @@ const (
 	sentinelProject   = "bopper"
 )
 
-// environment reads .env so interpolation resolves the same way docker compose
-// would, then neutralizes the workspace-identity variables.
-func environment(dir string) types.Mapping {
+// readEnv reads .env so interpolation resolves the same way docker compose would.
+func readEnv(dir string) types.Mapping {
 	m := types.Mapping{}
 	for _, kv := range os.Environ() {
 		if i := strings.IndexByte(kv, '='); i > 0 {
@@ -129,7 +142,6 @@ func environment(dir string) types.Mapping {
 	}
 	b, err := os.ReadFile(filepath.Join(dir, ".env"))
 	if err != nil {
-		neutralize(m)
 		return m
 	}
 	for _, line := range strings.Split(string(b), "\n") {
@@ -141,7 +153,6 @@ func environment(dir string) types.Mapping {
 			m[strings.TrimSpace(line[:i])] = strings.TrimSpace(line[i+1:])
 		}
 	}
-	neutralize(m)
 	return m
 }
 

@@ -2,16 +2,19 @@
 
 Run one Docker Compose stack, and give each git worktree only the containers it changed.
 
-**Status: early. The workspace layer and change detection work; nothing starts
-containers yet.** `bop up`, `bop down`, `bop ls` and `bop status` are real. Routing,
-overlays and databases are Phase 3 — see [roadmap.md](roadmap.md). For the full
-rationale and the product direction, read [vision.md](vision.md).
+**Status: working for the no-routing case.** `bop up` creates a reflinked worktree,
+works out which services the branch changed, and starts only those — reachable at
+`<id>.localhost` through a shared proxy, with everything else falling through to one
+shared baseline stack. Databases are still shared as-is (Phase 4) and a baseline
+service cannot yet call an overlay (Phase 6). See [roadmap.md](roadmap.md) for the
+phases, and [vision.md](vision.md) for the rationale.
 
 ![bop in use](docs/demo.gif)
 
 Every figure in the demo is measured, not invented. The disk and time numbers come
 from [Spike B](spikes/b-reflink.md); the fall-through behaviour comes from
-[Spike A](spikes/a-networking.md). Higher quality copy:
+[Spike A](spikes/a-networking.md); the stack cost from
+[the measurement](spikes/d-stack-cost.md). Higher quality copy:
 [docs/demo.mp4](docs/demo.mp4). Source and build instructions: [video/](video/).
 
 ## The problem
@@ -52,9 +55,20 @@ SERVICE   CHANGED  BASELINE          WORKSPACE
 orders    build    33e60ca063bb563b  8a2dff74283db72c
 payments  config   ab7738be1c5b0619  1c9f59e4856ba851
 
+$ bop ps
+baseline  running  (bopper_90_baseline)
+
+WORKSPACE  CONTAINERS                     URL
+feature-x  bopper-ws-feature-x-orders--…  http://feature-x.localhost:8080
+
 $ bop ls
 $ bop down feature-x [-delete-branch]
 ```
+
+`bop up` also starts the environment: the shared baseline stack once, then only the
+changed services on a workspace network that falls through to it. Run `bop up` again
+after editing to re-apply. Pass `-no-env` to create the worktree without containers.
+The proxy listens on 8080; set `BOPPER_PROXY_PORT` to change it.
 
 `bop up` creates the worktree, clones the main working directory into it with
 reflinks, and patches `.env`. Dependencies and build outputs come along without a
@@ -75,7 +89,7 @@ Four mechanisms, each sharing by default and copying only on change:
 | ---------- | ---------------------------------------------------------------------------- | ------- |
 | Filesystem | Reflink clone of the main working directory                                  | done    |
 | Detection  | A hash of each service's build inputs, compared against the baseline         | done    |
-| Services   | Changed services only, on a workspace network that falls through to baseline | Phase 3 |
+| Services   | Changed services only, on a workspace network that falls through to baseline | done    |
 | Data       | Shared read-only, cloned only when a migration differs                       | Phase 4 |
 
 The services layer rests on a measured property of Docker's resolver: a container
@@ -104,7 +118,6 @@ cache,queues` says otherwise.
 
 ## What this does not solve yet
 
-- **Nothing starts containers.** Phase 3.
 - **A baseline service cannot call an overlay service.** Header routing is Phase 6.
   Until then the changed service must sit at the edge of the call graph.
 - **A branch that changes a queue consumer or a scheduled job needs `--isolate`.**
