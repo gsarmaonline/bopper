@@ -1,0 +1,20 @@
+# Minimal baseline stack for the Phase 0 spikes.
+#
+# traefik/whoami is a tiny HTTP server that echoes its own hostname, so a
+# response identifies which container answered. That is exactly what Spike A
+# needs to measure.
+
+name: bopper-baseline
+
+services:
+  orders:
+    image: traefik/whoami
+    hostname: orders-baseline
+
+  payments:
+    image: traefik/whoami
+    hostname: payments-baseline
+
+networks:
+  default:
+    name: bopper_baseline

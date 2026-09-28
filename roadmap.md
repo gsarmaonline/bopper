@@ -19,11 +19,12 @@ Phases 0 to 3 are the product. Phases 4 to 6 are follow-ons.
 
 No code. Two spikes and a measurement, on a real Compose project.
 
-**Spike A, networking.** Start a full stack. Then start one service alone on that
-network with a distinct alias, and confirm it reaches the baseline for everything
-else. This settles an open question: if the overlay also answers to `orders`, Docker
-DNS resolves that name to both containers and sends baseline traffic to the overlay
-at random. Output is a written naming rule for overlay containers.
+**Spike A, networking. DONE.** See [spikes/a-networking.md](spikes/a-networking.md).
+A shared alias splits baseline traffic 10/10 between baseline and overlay, silently.
+A per-workspace network named to sort before the baseline's gives clean fall-through
+instead, because Docker resolves across attached networks in alphabetical order of
+network name. Overlays keep plain service names. The behaviour is undocumented, so
+`spikes/a3-name-order.sh` guards it as a regression test.
 
 **Spike B, filesystem.** Run `git worktree add`, `cp -c`, then `git restore`. Check
 that mtimes survive, that an incremental build stays warm, and that git does not
@@ -144,7 +145,6 @@ These block the phases named beside them.
 
 | Question                                                            | Blocks  |
 | ------------------------------------------------------------------- | ------- |
-| What alias does an overlay container take on the baseline network?  | Phase 3 |
 | In what order do `git worktree add`, the reflink clone and `git restore` run? | Phase 1 |
 | Which build inputs enter the hash, and which are safe to omit?      | Phase 2 |
 | Where does the idle template database come from, and who seeds it?  | Phase 4 |
