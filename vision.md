@@ -100,6 +100,8 @@ The interface between them is just a workspace ID and a directory. That keeps th
 
 Targeting the Compose spec and Docker API, rather than Docker internals, gives Podman compatibility through its Docker-compatible socket. A Kubernetes backend could later sit behind the same environment interface, using mirrord-style routing.
 
+That interface now exists rather than being an intention. `environment.Backend` is the contract, the Compose implementation satisfies it, and everything above it — the CLI, the data layer, change detection's output — speaks `internal/stack` rather than Compose's own model. Compose is the first backend, not the model, and a second one replaces a single type instead of threading new concepts through the tool.
+
 ## Automatic cleanup
 
 Bopper should reclaim idle containers, volumes and database clones itself, so nobody needs to run `docker system prune`. Docker can't do this well: it records no last-access time for volumes, doesn't know which resources belong together, and its only automatic cleanup is BuildKit's build-cache garbage collection.

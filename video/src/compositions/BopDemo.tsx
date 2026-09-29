@@ -39,9 +39,12 @@ const Title: React.FC = () => {
         </div>
         <div style={{ width: rule, height: 3, background: C.blue, borderRadius: 2, marginTop: 6 }} />
         <div style={{ ...sub, marginTop: 26, fontSize: 30, color: C.dim, textAlign: "center" }}>
-          copy-on-write Docker Compose
+          copy-on-write environments
           <br />
           for git worktrees
+        </div>
+        <div style={{ ...sub, marginTop: 18, fontSize: 19, color: "#5b6672" }}>
+          running on Docker Compose
         </div>
       </AbsoluteFill>
     </Stage>
@@ -116,10 +119,10 @@ const Adopt: React.FC = () => {
       <SceneTitle>getting started</SceneTitle>
       <AbsoluteFill style={{ justifyContent: "center", alignItems: "center" }}>
         <div style={{ ...head, fontSize: 32, color: C.text, marginBottom: 8 }}>
-          Point it at the Compose file you already have
+          Point it at the stack you already have
         </div>
         <div style={{ ...head, fontSize: 21, color: C.dim, marginBottom: 28 }}>
-          no new config, no rewrite, no migration off Compose
+          Compose today — no new config, no rewrite, nothing to migrate
         </div>
 
         <div style={{ display: "flex", alignItems: "center", gap: 28 }}>

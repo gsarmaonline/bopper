@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/compose-spec/compose-go/v2/types"
+	"github.com/gsarmaonline/bopper/internal/detect"
 )
 
 // Target is everything the environment layer needs to know about a workspace.
@@ -35,20 +35,26 @@ type Result struct {
 // The baseline is started first and left running. That is the point: every
 // workspace shares it, and an unchanged service falls through to it.
 func (r *Runner) Up(ctx context.Context, t Target, baselineDir string,
-	project *types.Project, changed []string) (*Result, error) {
+	changed []string) (*Result, error) {
+
+	prj, err := detect.LoadForRun(ctx, t.Dir, nil)
+	if err != nil {
+		return nil, err
+	}
+	project := prj.Compose
 
 	res := &Result{Changed: changed, Total: len(project.Services)}
 	if len(changed) == 0 {
 		// Nothing to overlay. The baseline serves the whole stack, which is the
 		// best case rather than a failure.
-		if err := r.startBaseline(ctx, baselineDir, project); err != nil {
+		if err := r.EnsureBaseline(ctx, baselineDir); err != nil {
 			return nil, err
 		}
 		return res, nil
 	}
 	res.FullStack = len(changed) >= len(project.Services)
 
-	if err := r.startBaseline(ctx, baselineDir, project); err != nil {
+	if err := r.EnsureBaseline(ctx, baselineDir); err != nil {
 		return nil, fmt.Errorf("starting the baseline: %w", err)
 	}
 	if err := r.EnsureProxy(ctx); err != nil {
@@ -92,19 +98,19 @@ func (r *Runner) Up(ctx context.Context, t Target, baselineDir string,
 	return res, nil
 }
 
-// EnsureBaseline brings the baseline up in whichever mode is configured. It is
-// exported because the data layer needs the baseline running before it can ask
-// anything of its database.
-func (r *Runner) EnsureBaseline(ctx context.Context, dir string, project *types.Project) error {
-	return r.startBaseline(ctx, dir, project)
-}
-
-// startBaseline brings the baseline up in whichever mode is configured.
-func (r *Runner) startBaseline(ctx context.Context, dir string, project *types.Project) error {
+// EnsureBaseline brings the baseline up in whichever mode is configured.
+//
+// It is idempotent - compose reconciles - so callers that need the baseline
+// running, such as the data layer before it touches a database, can simply ask.
+func (r *Runner) EnsureBaseline(ctx context.Context, dir string) error {
 	if !r.HeaderRouting() {
 		return r.BaselineUp(ctx, dir, nil)
 	}
-	doc, err := BuildBaselineHeaderRouted(project)
+	prj, err := detect.LoadForRun(ctx, dir, nil)
+	if err != nil {
+		return err
+	}
+	doc, err := BuildBaselineHeaderRouted(prj.Compose)
 	if err != nil {
 		return err
 	}

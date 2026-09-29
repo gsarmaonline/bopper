@@ -1,10 +1,12 @@
 # Bopper
 
-Run one Docker Compose stack, and give each git worktree only the containers it changed.
+Run one stack, and give each git worktree only the parts it changed.
 
-**Status: working.** `bop up` creates a reflinked worktree, works out which services
-the branch changed, and starts only those — reachable at `<id>.localhost` through a
-shared proxy, with everything else falling through to one shared baseline stack.
+**Status: working, on Docker Compose.** `bop up` creates a reflinked worktree, works
+out which services the branch changed, and starts only those — reachable at
+`<id>.localhost` through a shared proxy, with everything else falling through to one
+shared baseline stack. Compose is the first backend, not the model; see
+[Backends](#backends).
 The database is shared read-only, and cloned when the branch's migrations differ.
 `bop clean` reclaims what goes idle. `bop headers on` lets a baseline service reach
 an overlay. All six phases are built. See [roadmap.md](roadmap.md) for what each one
@@ -21,8 +23,9 @@ from [Spike B](spikes/b-reflink.md); the fall-through and header routing from
 ## The problem
 
 Git worktrees make several branches cheap to keep checked out. The application stack
-for each one is not cheap. Docker Compose starts a full copy per worktree: every
-service, database, cache and queue.
+for each one is not cheap. Run it per worktree and you get a full copy each time:
+every service, database, cache and queue. Compose does this, and so does every other
+way of declaring a stack — the duplication is in the model, not the tool.
 
 Most branches change one or two services. Measured across 13,445 real branches of
 immich and penpot, about three quarters of the branches that touch any service touch
@@ -38,16 +41,20 @@ make install        # optional; PREFIX=~/.local make install
 ```
 
 Requirements: Go 1.24 to build, git, and a filesystem with reflink support — APFS on
-macOS, or btrfs or XFS on Linux. Docker is not needed yet.
+macOS, or btrfs or XFS on Linux. Docker, and a Compose file, for the environment half;
+the workspace half works without either.
 
 ## Use
 
 ```
 $ bop up feature-x
 workspace feature-x
-  dir    /home/you/myapp-feature-x
-  branch feature-x (from main)
-  host   feature-x.localhost  (not serving yet - Phase 3)
+  dir     /home/you/myapp-feature-x
+  branch  feature-x (from main)
+  data    shared, read-only - migrations match the baseline
+  env     starting 1 of 4 services...
+  overlay orders
+  url     http://feature-x.localhost:8080
 
 $ bop status feature-x
 feature-x vs baseline (myapp)
@@ -67,10 +74,33 @@ $ bop clean [-idle 3h] [-remove-after 72h] [-dry-run]
 $ bop down feature-x [-delete-branch]
 ```
 
+### Database flags
+
+By default a workspace reads the baseline's real data through a read-only role, and
+gets its own copy only if its migrations differ from the baseline's. Two flags
+override that:
+
+```
+$ bop up feature-x                # shared read-only, or cloned if migrations differ
+$ bop up feature-x -isolate-db    # always its own copy, to throw data away freely
+$ bop up feature-x -share-db      # shared WITH writes — affects everyone
+```
+
+`-share-db` is the one configuration where a workspace can corrupt the baseline's
+data and every other worktree's view of it, so `bop up` says so when you use it.
+
+### Other flags
+
+```
+$ bop up feature-x -no-env        # create the worktree; start nothing
+$ bop up feature-x -base develop  # fork from a branch other than the current one
+$ bop headers on                  # let a baseline service reach an overlay
+```
+
 `bop up` also starts the environment: the shared baseline stack once, then only the
 changed services on a workspace network that falls through to it. Run `bop up` again
-after editing to re-apply. Pass `-no-env` to create the worktree without containers.
-The proxy listens on 8080; set `BOPPER_PROXY_PORT` to change it.
+after editing to re-apply. The proxy listens on 8080; set `BOPPER_PROXY_PORT` to
+change it.
 
 `bop up` creates the worktree, clones the main working directory into it with
 reflinks, and patches `.env`. Dependencies and build outputs come along without a
@@ -100,6 +130,37 @@ The services layer rests on a measured property of Docker's resolver: a containe
 attached to two networks resolves names from the alphabetically first network name,
 so a workspace network named to sort before the baseline's gives fall-through for
 free ([spikes/a-networking.md](spikes/a-networking.md)).
+
+## Backends
+
+Bopper runs on **Docker Compose** today. That is a fact about the implementation
+rather than about the tool: the design separates what a workspace *is* from what
+runs it.
+
+| Layer            | Knows about                       | Talks to                    |
+| ---------------- | --------------------------------- | --------------------------- |
+| Workspace        | git, reflinks, the filesystem     | nothing else                |
+| **Boundary**     | **a workspace ID and a directory**|                             |
+| Environment      | containers, networks, routing     | one backend                 |
+
+Everything above the environment layer — the CLI, the data layer, change
+detection's output — speaks in neutral terms (`internal/stack`), and the backend
+contract is one interface (`environment.Backend`). A second backend replaces one
+type rather than threading new concepts through the tool.
+
+What a backend has to answer is small: describe the stack in a directory, say which
+services a workspace changed, bring up a shared baseline, start a subset of services
+and route to them, tear them down, and reclaim what goes idle.
+
+Plausible next ones, in rough order of fit:
+
+- **Podman**, through its Docker-compatible socket. Bopper targets the Compose spec
+  and the Docker API rather than Docker internals, so this is close to free.
+- **Plain Docker, no Compose file** — a stack declared some other way, or inferred.
+- **Kubernetes**, with namespaces for overlays and mirrord-style routing. This is the
+  one `vision.md` has always pointed at, and the reason the boundary is where it is.
+
+None of these exist yet. The seam does.
 
 ## What Bopper shares, and what it copies
 

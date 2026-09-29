@@ -10,9 +10,15 @@ import (
 	"time"
 
 	"github.com/compose-spec/compose-go/v2/types"
+	"github.com/gsarmaonline/bopper/internal/detect"
+	"github.com/gsarmaonline/bopper/internal/stack"
 )
 
-// Runner drives docker compose and the Docker CLI.
+// Runner is the Compose backend: it drives docker compose and the Docker CLI.
+//
+// It is one implementation of Backend. Everything Compose-specific - generating
+// overlay files, renaming service keys, Traefik's dynamic configuration - lives
+// in this package and stops here.
 //
 // Bopper targets the Compose spec and the Docker API rather than Docker
 // internals, which is what keeps Podman viable through its Docker-compatible
@@ -26,6 +32,69 @@ type Runner struct {
 	StateDir string
 	Verbose  bool
 }
+
+// Name identifies this backend.
+func (r *Runner) Name() string { return "compose" }
+
+// Describe reads the Compose project in dir and returns it in neutral terms.
+func (r *Runner) Describe(ctx context.Context, dir string) (stack.Stack, error) {
+	p, err := detect.LoadForRun(ctx, dir, nil)
+	if err != nil {
+		return stack.Stack{}, err
+	}
+	return p.Stack(), nil
+}
+
+// Changed reports which services a workspace changes, by input hash.
+func (r *Runner) Changed(ctx context.Context, baselineDir, wsDir string) ([]string, error) {
+	base, err := detect.Load(ctx, baselineDir, nil)
+	if err != nil {
+		return nil, err
+	}
+	cur, err := detect.Load(ctx, wsDir, nil)
+	if err != nil {
+		return nil, err
+	}
+	baseFP, err := base.Fingerprints()
+	if err != nil {
+		return nil, err
+	}
+	curFP, err := cur.Fingerprints()
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, c := range detect.Diff(baseFP, curFP) {
+		// A service the workspace removed has nothing to start.
+		if c.Reason != "removed" {
+			out = append(out, c.Service)
+		}
+	}
+	return out, nil
+}
+
+// Containers lists a workspace's running containers.
+func (r *Runner) Containers(ctx context.Context, id string) ([]string, error) {
+	return r.OverlayContainers(ctx, id)
+}
+
+// ServiceContainer resolves a baseline service to a container name.
+func (r *Runner) ServiceContainer(ctx context.Context, service string) (string, error) {
+	return r.ContainerFor(ctx, service)
+}
+
+// WaitRunning blocks until a container is running.
+func (r *Runner) WaitRunning(ctx context.Context, container string, attempts int) error {
+	return r.WaitHealthy(ctx, container, attempts)
+}
+
+// Reclaim applies a cleanup policy.
+func (r *Runner) Reclaim(ctx context.Context, p Policy, hostFor func(string) string) ([]Action, error) {
+	return r.Clean(ctx, p, hostFor)
+}
+
+// Available reports whether Docker is reachable.
+func (r *Runner) Available(ctx context.Context) error { return Available(ctx) }
 
 // NewRunner prepares a runner with a per-user state directory.
 func NewRunner() (*Runner, error) {

@@ -18,7 +18,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/compose-spec/compose-go/v2/types"
+	"github.com/gsarmaonline/bopper/internal/stack"
 )
 
 // Engine is a supported database engine.
@@ -38,29 +38,21 @@ type DB struct {
 	Name     string
 }
 
-// Detect finds database services in a Compose project.
+// Detect finds database services in a stack.
 //
 // Detection is by image name and the environment variables the official images
-// define, because that is what a Compose file actually carries. A service that
-// looks like a database but exposes no credentials is skipped rather than
-// guessed at.
-func Detect(project *types.Project) []DB {
+// define, because that is what any declaration of a stack actually carries -
+// Compose, a Kubernetes manifest or anything else. A service that looks like a
+// database but exposes no credentials is skipped rather than guessed at.
+func Detect(st stack.Stack) []DB {
 	var out []DB
-	names := make([]string, 0, len(project.Services))
-	for n := range project.Services {
-		names = append(names, n)
-	}
-	sort.Strings(names)
+	services := append([]stack.Service(nil), st.Services...)
+	sort.Slice(services, func(i, j int) bool { return services[i].Name < services[j].Name })
 
-	for _, name := range names {
-		svc := project.Services[name]
+	for _, svc := range services {
+		name := svc.Name
 		img := strings.ToLower(svc.Image)
-		env := func(k string) string {
-			if v, ok := svc.Environment[k]; ok && v != nil {
-				return *v
-			}
-			return ""
-		}
+		env := func(k string) string { return svc.Env[k] }
 		switch {
 		case strings.Contains(img, "postgres"):
 			db := DB{

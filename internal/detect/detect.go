@@ -25,6 +25,7 @@ import (
 	"github.com/compose-spec/compose-go/v2/loader"
 	"github.com/compose-spec/compose-go/v2/types"
 	"github.com/gsarmaonline/bopper/internal/envfile"
+	"github.com/gsarmaonline/bopper/internal/stack"
 	"github.com/moby/patternmatcher"
 )
 
@@ -41,6 +42,59 @@ func (f Fingerprint) Sum() string {
 	h := sha256.New()
 	fmt.Fprintf(h, "build:%s\nconfig:%s\n", f.Build, f.Config)
 	return hex.EncodeToString(h.Sum(nil))[:16]
+}
+
+// Stack describes the project in backend-neutral terms, for everything above
+// the Compose backend: the data layer, the CLI and any future backend's shared
+// decisions all speak stack.Stack rather than Compose's own model.
+func (p *Project) Stack() stack.Stack {
+	out := stack.Stack{Dir: p.Dir}
+	for _, name := range p.names() {
+		svc := p.Compose.Services[name]
+		s := stack.Service{
+			Name:   name,
+			Image:  svc.Image,
+			Builds: svc.Build != nil,
+			Env:    map[string]string{},
+		}
+		for _, port := range svc.Ports {
+			if port.Target > 0 {
+				s.Ports = append(s.Ports, int(port.Target))
+			}
+		}
+		for _, e := range svc.Expose {
+			if n := atoiSafe(e); n > 0 {
+				s.Ports = append(s.Ports, n)
+			}
+		}
+		for k, v := range svc.Environment {
+			if v != nil {
+				s.Env[k] = *v
+			}
+		}
+		out.Services = append(out.Services, s)
+	}
+	return out
+}
+
+func (p *Project) names() []string {
+	out := make([]string, 0, len(p.Compose.Services))
+	for n := range p.Compose.Services {
+		out = append(out, n)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func atoiSafe(s string) int {
+	n := 0
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return 0
+		}
+		n = n*10 + int(c-'0')
+	}
+	return n
 }
 
 // Project is a loaded Compose project plus the directory it came from.

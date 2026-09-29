@@ -8,19 +8,17 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/compose-spec/compose-go/v2/types"
+	"github.com/gsarmaonline/bopper/internal/stack"
 )
 
-func ptr(s string) *string { return &s }
-
 func TestDetectFindsPostgresAndItsCredentials(t *testing.T) {
-	p := &types.Project{Services: types.Services{
-		"web": {Name: "web", Image: "nginx"},
-		"db": {Name: "db", Image: "postgres:16-alpine", Environment: types.MappingWithEquals{
-			"POSTGRES_USER": ptr("app"), "POSTGRES_PASSWORD": ptr("s3cret"), "POSTGRES_DB": ptr("shop"),
+	st := stack.Stack{Services: []stack.Service{
+		{Name: "web", Image: "nginx"},
+		{Name: "db", Image: "postgres:16-alpine", Env: map[string]string{
+			"POSTGRES_USER": "app", "POSTGRES_PASSWORD": "s3cret", "POSTGRES_DB": "shop",
 		}},
 	}}
-	got := Detect(p)
+	got := Detect(st)
 	if len(got) != 1 {
 		t.Fatalf("detected %d databases, want 1", len(got))
 	}
@@ -32,23 +30,21 @@ func TestDetectFindsPostgresAndItsCredentials(t *testing.T) {
 
 // The official image defaults matter: a compose file often sets only a password.
 func TestDetectAppliesPostgresDefaults(t *testing.T) {
-	p := &types.Project{Services: types.Services{
-		"db": {Name: "db", Image: "postgres:16", Environment: types.MappingWithEquals{
-			"POSTGRES_PASSWORD": ptr("dev"),
-		}},
+	st := stack.Stack{Services: []stack.Service{
+		{Name: "db", Image: "postgres:16", Env: map[string]string{"POSTGRES_PASSWORD": "dev"}},
 	}}
-	d := Detect(p)[0]
+	d := Detect(st)[0]
 	if d.User != "postgres" || d.Name != "postgres" {
 		t.Fatalf("defaults wrong: %+v", d)
 	}
 }
 
 func TestDetectIgnoresServicesThatAreNotDatabases(t *testing.T) {
-	p := &types.Project{Services: types.Services{
-		"cache": {Name: "cache", Image: "redis:7-alpine"},
-		"web":   {Name: "web", Image: "nginx"},
+	st := stack.Stack{Services: []stack.Service{
+		{Name: "cache", Image: "redis:7-alpine"},
+		{Name: "web", Image: "nginx"},
 	}}
-	if got := Detect(p); len(got) != 0 {
+	if got := Detect(st); len(got) != 0 {
 		t.Fatalf("detected %+v", got)
 	}
 }

@@ -15,11 +15,11 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/compose-spec/compose-go/v2/types"
 	"github.com/gsarmaonline/bopper/internal/data"
 	"github.com/gsarmaonline/bopper/internal/detect"
 	"github.com/gsarmaonline/bopper/internal/envfile"
 	"github.com/gsarmaonline/bopper/internal/environment"
+	"github.com/gsarmaonline/bopper/internal/stack"
 	"github.com/gsarmaonline/bopper/internal/workspace"
 )
 
@@ -192,32 +192,34 @@ func cmdUp(args []string) error {
 func startEnv(ctx context.Context, m *workspace.Manager, w workspace.Workspace,
 	verbose bool, dbMode data.Mode) error {
 
-	r, err := environment.NewRunner()
+	b, err := environment.Open()
 	if err != nil {
 		return err
 	}
-	r.Verbose = verbose
+	if r, ok := b.(*environment.Runner); ok {
+		r.Verbose = verbose
+	}
 
 	// The baseline must be up before anything can be asked of its database.
-	basePrj, err := detect.LoadForRun(ctx, m.Root, nil)
-	if err != nil {
-		return err
-	}
-	if err := r.EnsureBaseline(ctx, m.Root, basePrj.Compose); err != nil {
+	if err := b.EnsureBaseline(ctx, m.Root); err != nil {
 		return fmt.Errorf("starting the baseline: %w", err)
 	}
-	if err := applyData(ctx, r, m.Root, w, basePrj.Compose, dbMode); err != nil {
+	baseline, err := b.Describe(ctx, m.Root)
+	if err != nil {
+		return err
+	}
+	if err := applyData(ctx, b, m.Root, w, baseline, dbMode); err != nil {
 		return err
 	}
 
-	changed, project, err := changedServices(ctx, m.Root, w.Dir)
+	changed, err := b.Changed(ctx, m.Root, w.Dir)
 	if err != nil {
 		return err
 	}
 
-	fmt.Printf("  env    starting %d of %d services...\n", len(changed), len(project.Services))
-	res, err := r.Up(ctx, environment.Target{ID: w.ID, Dir: w.Dir, Host: w.Host()},
-		m.Root, project, changed)
+	fmt.Printf("  env    starting %d of %d services...\n", len(changed), baseline.Len())
+	res, err := b.Up(ctx, environment.Target{ID: w.ID, Dir: w.Dir, Host: w.Host()},
+		m.Root, changed)
 	if err != nil {
 		return err
 	}
@@ -247,25 +249,25 @@ func startEnv(ctx context.Context, m *workspace.Manager, w workspace.Workspace,
 //
 // A shared database is never touched: other workspaces and the baseline are
 // still using it, and the read-only role is shared too.
-func dropClone(ctx context.Context, r *environment.Runner, baseDir string, w workspace.Workspace) error {
-	prj, err := detect.LoadForRun(ctx, baseDir, nil)
+func dropClone(ctx context.Context, b environment.Backend, baseDir string, w workspace.Workspace) error {
+	st, err := b.Describe(ctx, baseDir)
 	if err != nil {
-		return nil // no compose project; nothing to drop
+		return nil // nothing described; nothing to drop
 	}
-	dbs := data.Detect(prj.Compose)
+	dbs := data.Detect(st)
 	if len(dbs) == 0 || dbs[0].Engine != data.Postgres {
 		return nil
 	}
 	db := dbs[0]
-	container, err := r.ContainerFor(ctx, db.Service)
+	container, err := b.ServiceContainer(ctx, db.Service)
 	if err != nil {
 		return nil // the baseline is not running; nothing to drop against
 	}
 	target := data.Decide(db, w.ID, true, "", data.Isolate).Target
-	if !data.Exists(ctx, r.Exec, container, db, target) {
+	if !data.Exists(ctx, b.Exec, container, db, target) {
 		return nil
 	}
-	if err := data.Drop(ctx, r.Exec, container, db, target); err != nil {
+	if err := data.Drop(ctx, b.Exec, container, db, target); err != nil {
 		return fmt.Errorf("dropping the database clone %s: %w", target, err)
 	}
 	fmt.Printf("dropped database %s\n", target)
@@ -274,10 +276,10 @@ func dropClone(ctx context.Context, r *environment.Runner, baseDir string, w wor
 
 // applyData decides whether the workspace shares the baseline's database or
 // gets its own, then rewires .env to match.
-func applyData(ctx context.Context, r *environment.Runner, baseDir string,
-	w workspace.Workspace, project *types.Project, mode data.Mode) error {
+func applyData(ctx context.Context, b environment.Backend, baseDir string,
+	w workspace.Workspace, st stack.Stack, mode data.Mode) error {
 
-	dbs := data.Detect(project)
+	dbs := data.Detect(st)
 	if len(dbs) == 0 {
 		return nil
 	}
@@ -296,15 +298,15 @@ func applyData(ctx context.Context, r *environment.Runner, baseDir string,
 	}
 	plan := data.Decide(db, w.ID, differ, where, mode)
 
-	container, err := r.ContainerFor(ctx, db.Service)
+	container, err := b.ServiceContainer(ctx, db.Service)
 	if err != nil {
 		return err
 	}
-	if err := r.WaitHealthy(ctx, container, 40); err != nil {
+	if err := b.WaitRunning(ctx, container, 40); err != nil {
 		return err
 	}
 	// A running container is not a ready database.
-	if err := data.WaitReady(ctx, r.Exec, container, db, 60); err != nil {
+	if err := data.WaitReady(ctx, b.Exec, container, db, 60); err != nil {
 		return err
 	}
 
@@ -314,17 +316,17 @@ func applyData(ctx context.Context, r *environment.Runner, baseDir string,
 
 	switch {
 	case plan.Clone:
-		if data.Exists(ctx, r.Exec, container, db, plan.Target) {
+		if data.Exists(ctx, b.Exec, container, db, plan.Target) {
 			fmt.Printf("  data   own database %s (existing)\n", plan.Target)
 		} else {
-			how, err := data.Clone(ctx, r.Exec, container, db, plan.Target)
+			how, err := data.Clone(ctx, b.Exec, container, db, plan.Target)
 			if err != nil {
 				return fmt.Errorf("cloning the database: %w", err)
 			}
 			fmt.Printf("  data   own database %s (%s) - %s\n", plan.Target, how, plan.Reason)
 		}
 	case plan.ReadOnly:
-		if err := data.EnsureReadOnly(ctx, r.Exec, container, db, roPassword); err != nil {
+		if err := data.EnsureReadOnly(ctx, b.Exec, container, db, roPassword); err != nil {
 			return fmt.Errorf("creating the read-only role: %w", err)
 		}
 		fmt.Printf("  data   shared, read-only - %s\n", plan.Reason)
@@ -344,38 +346,6 @@ func applyData(ctx context.Context, r *environment.Runner, baseDir string,
 		{"BOPPER_HOST", w.Host()},
 		{"COMPOSE_PROJECT_NAME", "bopper-ws-" + w.ID},
 	}, vars...))
-}
-
-// changedServices loads both projects and diffs them.
-func changedServices(ctx context.Context, baseDir, wsDir string) ([]string, *types.Project, error) {
-	basePrj, err := detect.Load(ctx, baseDir, nil)
-	if err != nil {
-		return nil, nil, err
-	}
-	curPrj, err := detect.Load(ctx, wsDir, nil)
-	if err != nil {
-		return nil, nil, err
-	}
-	baseFP, err := basePrj.Fingerprints()
-	if err != nil {
-		return nil, nil, err
-	}
-	curFP, err := curPrj.Fingerprints()
-	if err != nil {
-		return nil, nil, err
-	}
-	var changed []string
-	for _, c := range detect.Diff(baseFP, curFP) {
-		if c.Reason != "removed" {
-			changed = append(changed, c.Service)
-		}
-	}
-	// Containers need the real environment, not the sentinels comparison uses.
-	runPrj, err := detect.LoadForRun(ctx, wsDir, nil)
-	if err != nil {
-		return nil, nil, err
-	}
-	return changed, runPrj.Compose, nil
 }
 
 func cmdDown(args []string) error {
@@ -402,17 +372,17 @@ func cmdDown(args []string) error {
 	if found {
 		ctx := context.Background()
 		if environment.Available(ctx) == nil {
-			r, err := environment.NewRunner()
+			b, err := environment.Open()
 			if err != nil {
 				return err
 			}
 			// The database clone goes before the containers, because dropping it
-			// needs the baseline's database container, and reading the project
+			// needs the baseline's database container, and reading the stack
 			// needs the worktree.
-			if err := dropClone(ctx, r, m.Root, w); err != nil {
+			if err := dropClone(ctx, b, m.Root, w); err != nil {
 				fmt.Fprintf(os.Stderr, "bop: %v\n", err)
 			}
-			if err := r.Down(ctx, environment.Target{ID: w.ID, Dir: w.Dir}); err != nil {
+			if err := b.Down(ctx, environment.Target{ID: w.ID, Dir: w.Dir}); err != nil {
 				return fmt.Errorf("stopping the overlay: %w", err)
 			}
 		}
@@ -434,12 +404,12 @@ func cmdHeaders(args []string) error {
 	if err := parseArgs(fs, args); err != nil {
 		return err
 	}
-	r, err := environment.NewRunner()
+	b, err := environment.Open()
 	if err != nil {
 		return err
 	}
 	if fs.NArg() == 0 {
-		if r.HeaderRouting() {
+		if b.HeaderRouting() {
 			fmt.Println("header routing: on")
 			fmt.Printf("  a baseline service that forwards %s reaches the overlay\n",
 				environment.Header)
@@ -451,7 +421,7 @@ func cmdHeaders(args []string) error {
 	}
 	switch fs.Arg(0) {
 	case "on":
-		if err := r.SetHeaderRouting(true); err != nil {
+		if err := b.SetHeaderRouting(true); err != nil {
 			return err
 		}
 		fmt.Println("header routing: on")
@@ -463,7 +433,7 @@ func cmdHeaders(args []string) error {
 		fmt.Println()
 		fmt.Println("Run bop up again to restart the baseline in this mode.")
 	case "off":
-		if err := r.SetHeaderRouting(false); err != nil {
+		if err := b.SetHeaderRouting(false); err != nil {
 			return err
 		}
 		fmt.Println("header routing: off")
@@ -491,11 +461,11 @@ func cmdClean(args []string) error {
 		return err
 	}
 	ctx := context.Background()
-	if err := environment.Available(ctx); err != nil {
+	b, err := environment.Open()
+	if err != nil {
 		return err
 	}
-	r, err := environment.NewRunner()
-	if err != nil {
+	if err := b.Available(ctx); err != nil {
 		return err
 	}
 
@@ -512,7 +482,7 @@ func cmdClean(args []string) error {
 		host[w.ID] = w.Host()
 	}
 
-	actions, err := r.Clean(ctx, environment.Policy{
+	actions, err := b.Reclaim(ctx, environment.Policy{
 		StopIdle: *idle, RemoveIdle: *rm, Known: known, DryRun: *dry,
 	}, func(id string) string {
 		if h, ok := host[id]; ok {
@@ -549,11 +519,11 @@ func cmdPs(args []string) error {
 		return err
 	}
 	ctx := context.Background()
-	if err := environment.Available(ctx); err != nil {
+	b, err := environment.Open()
+	if err != nil {
 		return err
 	}
-	r, err := environment.NewRunner()
-	if err != nil {
+	if err := b.Available(ctx); err != nil {
 		return err
 	}
 
@@ -574,7 +544,7 @@ func cmdPs(args []string) error {
 	}
 
 	baseline := "stopped"
-	if r.BaselineRunning(ctx) {
+	if b.BaselineRunning(ctx) {
 		baseline = "running"
 	}
 	fmt.Printf("baseline  %s  (%s)\n", baseline, environment.BaselineNetwork)
@@ -582,7 +552,7 @@ func cmdPs(args []string) error {
 	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(tw, "\nWORKSPACE\tCONTAINERS\tURL")
 	for _, w := range ws {
-		cs, err := r.OverlayContainers(ctx, w.ID)
+		cs, err := b.Containers(ctx, w.ID)
 		if err != nil {
 			return err
 		}
