@@ -21,12 +21,14 @@ export const FONT_SANS =
 // composition cannot disagree.
 export const SCENES = {
   title: { from: 0, dur: 70 },
-  problem: { from: 70, dur: 110 },
-  up: { from: 180, dur: 155 },
-  overlay: { from: 335, dur: 130 },
-  status: { from: 465, dur: 105 },
-  headers: { from: 570, dur: 145 },
-  clean: { from: 715, dur: 110 },
-  down: { from: 825, dur: 95 },
+  problem: { from: 70, dur: 105 },
+  adopt: { from: 175, dur: 130 },
+  up: { from: 305, dur: 150 },
+  overlay: { from: 455, dur: 125 },
+  status: { from: 580, dur: 100 },
+  data: { from: 680, dur: 160 },
+  headers: { from: 840, dur: 140 },
+  clean: { from: 980, dur: 105 },
+  down: { from: 1085, dur: 95 },
 };
-export const TOTAL = 920;
+export const TOTAL = 1180;

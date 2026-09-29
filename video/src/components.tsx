@@ -166,3 +166,63 @@ export const ServiceBox: React.FC<{
     </div>
   );
 };
+
+/** FileCard shows a file the developer already has, with its name in the chrome. */
+export const FileCard: React.FC<{
+  name: string;
+  lines: { text: string; color?: string }[];
+  start: number;
+  width?: number;
+  badge?: string;
+}> = ({ name, lines, start, width = 420, badge }) => {
+  const shell = useFadeUp(start, 20);
+  return (
+    <div
+      style={{
+        ...shell,
+        width,
+        background: C.panel,
+        border: `1px solid ${C.panelEdge}`,
+        borderRadius: 12,
+        overflow: "hidden",
+      }}
+    >
+      <div
+        style={{
+          height: 34,
+          background: "#1c2128",
+          borderBottom: `1px solid ${C.panelEdge}`,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          padding: "0 14px",
+          fontFamily: FONT_MONO,
+          fontSize: 15,
+          color: C.dim,
+        }}
+      >
+        <span>{name}</span>
+        {badge ? (
+          <span
+            style={{
+              color: C.green,
+              border: `1px solid ${C.green}`,
+              borderRadius: 4,
+              padding: "1px 7px",
+              fontSize: 12,
+            }}
+          >
+            {badge}
+          </span>
+        ) : null}
+      </div>
+      <div style={{ padding: "16px 18px", fontFamily: FONT_MONO, fontSize: 16, lineHeight: 1.6 }}>
+        {lines.map((l, i) => (
+          <div key={i} style={{ color: l.color ?? C.dim, whiteSpace: "pre" }}>
+            {l.text}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+};

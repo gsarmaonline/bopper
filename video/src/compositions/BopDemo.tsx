@@ -6,7 +6,7 @@ import {
   useCurrentFrame,
 } from "remotion";
 import { C, FONT_MONO, FONT_SANS, SCENES } from "../theme";
-import { ServiceBox, SceneTitle, Terminal, useFadeUp, usePop } from "../components";
+import { FileCard, ServiceBox, SceneTitle, Terminal, useFadeUp, usePop } from "../components";
 
 const Stage: React.FC<{ children: React.ReactNode }> = ({ children }) => (
   <AbsoluteFill style={{ backgroundColor: C.bg, fontFamily: FONT_SANS }}>{children}</AbsoluteFill>
@@ -95,6 +95,79 @@ const Problem: React.FC = () => {
           }}
         >
           15 containers · 3 × node_modules · 3 × cold builds
+        </div>
+      </AbsoluteFill>
+    </Stage>
+  );
+};
+
+/* ------------------------------------------------------- adopting a repo */
+const Adopt: React.FC = () => {
+  const frame = useCurrentFrame();
+  const head = useFadeUp(2);
+  const arrow = interpolate(frame, [40, 58], [0, 1], {
+    extrapolateLeft: "clamp",
+    extrapolateRight: "clamp",
+  });
+  const note = useFadeUp(74);
+
+  return (
+    <Stage>
+      <SceneTitle>getting started</SceneTitle>
+      <AbsoluteFill style={{ justifyContent: "center", alignItems: "center" }}>
+        <div style={{ ...head, fontSize: 32, color: C.text, marginBottom: 8 }}>
+          Point it at the Compose file you already have
+        </div>
+        <div style={{ ...head, fontSize: 21, color: C.dim, marginBottom: 28 }}>
+          no new config, no rewrite, no migration off Compose
+        </div>
+
+        <div style={{ display: "flex", alignItems: "center", gap: 28 }}>
+          <FileCard
+            start={14}
+            name="compose.yaml"
+            badge="unchanged"
+            width={400}
+            lines={[
+              { text: "services:", color: C.text },
+              { text: "  orders:", color: C.blue },
+              { text: "    build: ./orders", color: C.dim },
+              { text: "  payments:", color: C.blue },
+              { text: "    build: ./payments", color: C.dim },
+              { text: "  db:", color: C.blue },
+              { text: "    image: postgres:16", color: C.dim },
+            ]}
+          />
+          <div style={{ opacity: arrow, display: "flex", alignItems: "center", width: 74 }}>
+            <div style={{ flex: 1, height: 2, background: C.green }} />
+            <div
+              style={{
+                width: 0,
+                height: 0,
+                borderTop: "7px solid transparent",
+                borderBottom: "7px solid transparent",
+                borderLeft: `10px solid ${C.green}`,
+              }}
+            />
+          </div>
+          <Terminal
+            start={46}
+            command="bop up feature-x"
+            width={430}
+            typeFor={22}
+            lineDelay={7}
+            lines={[
+              { text: "data    shared, read-only", color: C.green },
+              { text: "env     starting 1 of 3", color: C.dim },
+              { text: "overlay orders", color: C.blue },
+              { text: "url     feature-x.localhost", color: C.green },
+            ]}
+          />
+        </div>
+
+        <div style={{ ...note, marginTop: 28, fontSize: 20, color: C.dim, textAlign: "center" }}>
+          Needs a git repo, Docker, and a reflink filesystem —{" "}
+          <span style={{ color: C.text }}>APFS, btrfs or XFS</span>
         </div>
       </AbsoluteFill>
     </Stage>
@@ -288,6 +361,124 @@ const Status: React.FC = () => {
   );
 };
 
+/* ------------------------------------------------------------ the database */
+const Data: React.FC = () => {
+  const frame = useCurrentFrame();
+  const head = useFadeUp(2);
+  const note = useFadeUp(112);
+
+  const Row: React.FC<{
+    at: number;
+    cmd: string;
+    cmdColor: string;
+    result: string;
+    resultColor: string;
+    risk: string;
+    riskColor: string;
+  }> = ({ at, cmd, cmdColor, result, resultColor, risk, riskColor }) => {
+    const o = interpolate(frame, [at, at + 14], [0, 1], {
+      extrapolateLeft: "clamp",
+      extrapolateRight: "clamp",
+    });
+    const x = interpolate(frame, [at, at + 14], [-18, 0], {
+      extrapolateLeft: "clamp",
+      extrapolateRight: "clamp",
+    });
+    return (
+      <div
+        style={{
+          opacity: o,
+          transform: `translateX(${x}px)`,
+          display: "flex",
+          alignItems: "center",
+          fontFamily: FONT_MONO,
+          fontSize: 17,
+          borderTop: `1px solid ${C.panelEdge}`,
+          padding: "13px 0",
+        }}
+      >
+        <div style={{ width: 350, color: cmdColor, whiteSpace: "nowrap" }}>{cmd}</div>
+        <div style={{ width: 230, color: resultColor, whiteSpace: "nowrap" }}>{result}</div>
+        <div style={{ width: 370, color: riskColor, fontSize: 15, whiteSpace: "nowrap" }}>
+          {risk}
+        </div>
+      </div>
+    );
+  };
+
+  return (
+    <Stage>
+      <SceneTitle>the database</SceneTitle>
+      <AbsoluteFill style={{ justifyContent: "center", alignItems: "center" }}>
+        <div style={{ ...head, fontSize: 32, color: C.text, marginBottom: 8 }}>
+          Real data, and you cannot break it
+        </div>
+        <div style={{ ...head, fontSize: 20, color: C.dim, marginBottom: 22 }}>
+          shared by default, copied only when it has to be
+        </div>
+
+        <div>
+          <div
+            style={{
+              display: "flex",
+              fontFamily: FONT_SANS,
+              fontSize: 14,
+              color: C.dim,
+              letterSpacing: 1.4,
+              paddingBottom: 6,
+            }}
+          >
+            <div style={{ width: 350 }}>COMMAND</div>
+            <div style={{ width: 230 }}>DATABASE</div>
+            <div style={{ width: 370 }}>WHAT IT MEANS</div>
+          </div>
+          <Row
+            at={20}
+            cmd="bop up feature-x"
+            cmdColor={C.text}
+            result="shared, read-only"
+            resultColor={C.green}
+            risk="reads the baseline's real data"
+            riskColor={C.dim}
+          />
+          <Row
+            at={44}
+            cmd="  …migrations differ"
+            cmdColor={C.dim}
+            result="its own clone"
+            resultColor={C.blue}
+            risk="automatic — it would break everyone else"
+            riskColor={C.dim}
+          />
+          <Row
+            at={68}
+            cmd="bop up feature-x -isolate-db"
+            cmdColor={C.text}
+            result="its own clone"
+            resultColor={C.blue}
+            risk="throw data away freely"
+            riskColor={C.dim}
+          />
+          <Row
+            at={92}
+            cmd="bop up feature-x -share-db"
+            cmdColor={C.text}
+            result="shared, WRITABLE"
+            resultColor={C.red}
+            risk="hits the baseline and every worktree"
+            riskColor={C.amber}
+          />
+        </div>
+
+        <div style={{ ...note, marginTop: 24, fontSize: 19, color: C.dim, textAlign: "center" }}>
+          The default is a read-only GRANT —{" "}
+          <span style={{ color: C.text }}>no proxy, no parser, just a permission</span>
+        </div>
+      </AbsoluteFill>
+    </Stage>
+  );
+};
+
 /* ----------------------------------------------------------- bop headers */
 const Headers: React.FC = () => {
   const frame = useCurrentFrame();
@@ -443,6 +634,9 @@ export const BopDemo: React.FC = () => (
     <Sequence from={SCENES.problem.from} durationInFrames={SCENES.problem.dur}>
       <Problem />
     </Sequence>
+    <Sequence from={SCENES.adopt.from} durationInFrames={SCENES.adopt.dur}>
+      <Adopt />
+    </Sequence>
     <Sequence from={SCENES.up.from} durationInFrames={SCENES.up.dur}>
       <Up />
     </Sequence>
@@ -451,6 +645,9 @@ export const BopDemo: React.FC = () => (
     </Sequence>
     <Sequence from={SCENES.status.from} durationInFrames={SCENES.status.dur}>
       <Status />
+    </Sequence>
+    <Sequence from={SCENES.data.from} durationInFrames={SCENES.data.dur}>
+      <Data />
     </Sequence>
     <Sequence from={SCENES.headers.from} durationInFrames={SCENES.headers.dur}>
       <Headers />
